@@ -1,36 +1,46 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Deutsch Partner — Sprechen üben
 
-## Getting Started
+Voice-first German **speaking** practice. The app hears you, replies in spoken German, and shows **only the latest partner line** on screen (no chat history).
 
-First, run the development server:
+**Iteration 1** uses the browser microphone and speech APIs plus mock replies — no API keys.
+
+## Quick start
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) in **Chrome** (recommended).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## How to use
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. On load you hear a German greeting; that line appears in the center.
+2. Tap the **large mic** → speak in German → tap again to stop, or finish speaking and wait.
+3. The partner replies (spoken + shown); the screen shows **only the new line** (the previous one is replaced).
+4. Tap **Neues Smalltalk-Thema** for a random conversation starter matched to your level (A1/A2/B1).
+5. Use **Niveau** (A1/A2/B1), **Vorlesen**, and **Nochmal hören** as needed.
+6. **Tap any word** in the partner’s line for gender, plural, translation, pronunciation, and **add to your practice list**.
+7. Open **Üben** (top right) to review saved words — stored in your browser on this device.
 
-## Learn More
+## Tips
 
-To learn more about Next.js, take a look at the following resources:
+- **Desktop:** `localhost` is enough for the microphone.
+- **Phone:** deploy with HTTPS (e.g. [Vercel](https://vercel.com)) so the mic works.
+- Edit partner phrases in [`lib/prompts.ts`](lib/prompts.ts) and logic in [`lib/mockSpeakingPartner.ts`](lib/mockSpeakingPartner.ts).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Iteration 2 (real AI, for web release)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+When you want natural conversation and better audio:
 
-## Deploy on Vercel
+1. Add `OPENAI_API_KEY` in `.env.local`.
+2. Add `/api/transcribe`, `/api/chat`, `/api/speak`.
+3. Swap the mock call in [`components/SpeakingPartner.tsx`](components/SpeakingPartner.tsx) for API fetch — the minimal UI stays the same.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Scripts
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Command         | Description        |
+|-----------------|--------------------|
+| `npm run dev`   | Development server |
+| `npm run build` | Production build   |
+| `npm start`     | Run production     |
