@@ -85,8 +85,8 @@ export const SMALL_TALK_TOPICS: SmallTalkTopic[] = [
     label: "Musik & Filme",
     prompts: {
       A1: "Welche Musik hörst du gern?",
-      A2: "Welchen Film oder welche Serie magst du?",
-      B1: "Gibt es einen Film oder ein Lied, das du in letzter Zeit oft empfohlen hast?",
+      A2: "Welchen Song magst du gerade? Weißt du, ob er ein Sample enthält?",
+      B1: "Hast du schon mal gemerkt, dass ein moderner Song einen alten Track samplet? Was findest du daran interessant?",
     },
   },
   {

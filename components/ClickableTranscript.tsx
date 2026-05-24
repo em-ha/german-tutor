@@ -1,8 +1,6 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { usePracticeList } from "@/lib/practiceList/usePracticeList";
-import { practiceWordId } from "@/lib/practiceList/storage";
 import { lookupWord, lookupWordLocal } from "@/lib/wordLookup/lookupWord";
 import { isLookupable, tokenizeTranscript } from "@/lib/wordLookup/normalize";
 import type { WordLookupResult } from "@/lib/wordLookup/types";
@@ -26,7 +24,6 @@ export function ClickableTranscript({
   isStreaming,
   onPronounce,
 }: Props) {
-  const { add, remove, words } = usePracticeList();
   const [selectedWord, setSelectedWord] = useState<string | null>(null);
   const [anchor, setAnchor] = useState<Anchor | null>(null);
   const [info, setInfo] = useState<WordLookupResult | null>(null);
@@ -68,13 +65,6 @@ export function ClickableTranscript({
     [isStreaming]
   );
 
-  const inPracticeList =
-    selectedWord && info
-      ? words.some(
-          (w) => w.id === practiceWordId(selectedWord, info.lemma)
-        )
-      : false;
-
   const tokens = tokenizeTranscript(text);
 
   return (
@@ -101,7 +91,7 @@ export function ClickableTranscript({
                 void handleWordClick(token, e.currentTarget);
               }}
               className="cursor-pointer rounded px-0.5 underline decoration-emerald-400/50 decoration-dotted underline-offset-4 transition-colors hover:bg-emerald-50 hover:decoration-emerald-600 dark:hover:bg-emerald-950/40"
-              aria-label={`Wortinfo für ${token}`}
+              aria-label={`Word info for ${token}`}
             >
               {token}
             </button>
@@ -115,15 +105,8 @@ export function ClickableTranscript({
           info={info}
           loading={loading}
           anchor={anchor}
-          inPracticeList={inPracticeList}
           onClose={closePopover}
           onPronounce={onPronounce}
-          onAddToPractice={() => {
-            if (info) add(selectedWord, info);
-          }}
-          onRemoveFromPractice={() => {
-            if (info) remove(practiceWordId(selectedWord, info.lemma));
-          }}
         />
       )}
     </>

@@ -5,32 +5,158 @@ import { useSynthesisSupported } from "./clientCapabilities";
 
 const LANG = "de-DE";
 
+/** Rough syllable count for German words — used to time mouth animation */
+function countSyllables(word: string): number {
+  const cleaned = word.toLowerCase().replace(/[^a-zäöüy]/g, "");
+  const groups = cleaned.match(/[aeiouäöüy]+/g);
+  return Math.max(1, groups?.length ?? 1);
+}
+
+/**
+ * Schedule synthetic onBoundary events timed to approximate word durations.
+ * Used with ElevenLabs since it doesn't provide word boundary events.
+ */
+function scheduleWordBoundaries(
+  text: string,
+  onBoundary: (word: string) => void,
+  totalDurationMs: number
+): ReturnType<typeof setTimeout>[] {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+
+  // Estimate each word's proportion of total speech time by syllable count
+  const syllables = words.map(countSyllables);
+  const totalSyllables = syllables.reduce((a, b) => a + b, 0);
+
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  let elapsed = 0;
+
+  words.forEach((word, i) => {
+    const wordDuration = (syllables[i] / totalSyllables) * totalDurationMs;
+    const delay = elapsed;
+    timers.push(
+      setTimeout(() => onBoundary(word), delay)
+    );
+    elapsed += wordDuration;
+  });
+
+  return timers;
+}
+
 export function useSpeechSynthesis() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [autoSpeak, setAutoSpeak] = useState(true);
   const supported = useSynthesisSupported();
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
+  const boundaryTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const cancelBoundaryTimers = useCallback(() => {
+    boundaryTimersRef.current.forEach(clearTimeout);
+    boundaryTimersRef.current = [];
+  }, []);
+
+  const cancelAudio = useCallback(() => {
+    cancelBoundaryTimers();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.onended = null;
+      audioRef.current.onerror = null;
+      audioRef.current = null;
+    }
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
+  }, [cancelBoundaryTimers]);
 
   const cancel = useCallback(() => {
     if (typeof window !== "undefined") {
       window.speechSynthesis.cancel();
     }
     utteranceRef.current = null;
+    cancelAudio();
     setIsSpeaking(false);
-  }, []);
+  }, [cancelAudio]);
 
-  const speak = useCallback(
-    (text: string, onEnd?: () => void) => {
+  /** Speak via ElevenLabs API route. Returns false if it fails (caller should fallback). */
+  const speakElevenLabs = useCallback(
+    async (
+      text: string,
+      onEnd?: () => void,
+      onBoundary?: (word: string) => void
+    ): Promise<boolean> => {
+      try {
+        const res = await fetch("/api/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+
+        if (!res.ok) {
+          const errBody = await res.text();
+          console.error("[ElevenLabs] API error", res.status, errBody);
+          return false;
+        }
+
+        const data = await res.json() as {
+          audioBase64?: string;
+          wordTimings?: { word: string; startMs: number }[];
+        };
+
+        if (!data.audioBase64) return false;
+
+        // Decode base64 audio to a blob URL
+        const binary = atob(data.audioBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: "audio/mpeg" });
+        const url = URL.createObjectURL(blob);
+        audioUrlRef.current = url;
+
+        const audio = new Audio(url);
+        audioRef.current = audio;
+
+        const finish = () => {
+          cancelBoundaryTimers();
+          setIsSpeaking(false);
+          cancelAudio();
+          onEnd?.();
+        };
+
+        audio.onended = finish;
+        audio.onerror = finish;
+
+        // Schedule precise word boundaries from ElevenLabs alignment data
+        if (onBoundary && data.wordTimings?.length) {
+          const timers = data.wordTimings.map(({ word, startMs }) =>
+            setTimeout(() => onBoundary(word), startMs)
+          );
+          boundaryTimersRef.current = timers;
+        }
+
+        setIsSpeaking(true);
+        await audio.play();
+        return true;
+      } catch (err) {
+        console.error("[ElevenLabs] Unexpected error:", err);
+        return false;
+      }
+    },
+    [cancelAudio, cancelBoundaryTimers]
+  );
+
+  /** Speak via browser built-in TTS (fallback) */
+  const speakBrowser = useCallback(
+    (text: string, onEnd?: () => void, onBoundary?: (word: string) => void) => {
       if (typeof window === "undefined" || !("speechSynthesis" in window)) {
         onEnd?.();
         return;
       }
-      if (!text.trim()) {
-        onEnd?.();
-        return;
-      }
 
-      cancel();
+      window.speechSynthesis.cancel();
+      utteranceRef.current = null;
 
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = LANG;
@@ -52,10 +178,37 @@ export function useSpeechSynthesis() {
       utterance.onend = finish;
       utterance.onerror = finish;
 
+      if (onBoundary) {
+        utterance.onboundary = (event) => {
+          if (event.name === "word") {
+            const word = text.slice(event.charIndex, event.charIndex + (event.charLength ?? 1));
+            if (word.trim()) onBoundary(word.trim());
+          }
+        };
+      }
+
       utteranceRef.current = utterance;
       window.speechSynthesis.speak(utterance);
     },
-    [cancel]
+    []
+  );
+
+  const speak = useCallback(
+    (text: string, onEnd?: () => void, onBoundary?: (word: string) => void) => {
+      if (!text.trim()) {
+        onEnd?.();
+        return;
+      }
+      cancel();
+
+      // Try ElevenLabs first; fall back to browser TTS if it fails
+      speakElevenLabs(text, onEnd, onBoundary).then((ok) => {
+        if (!ok) {
+          speakBrowser(text, onEnd, onBoundary);
+        }
+      });
+    },
+    [cancel, speakElevenLabs, speakBrowser]
   );
 
   useEffect(() => {
@@ -67,6 +220,11 @@ export function useSpeechSynthesis() {
       window.speechSynthesis.onvoiceschanged = null;
     };
   }, [supported]);
+
+  // Clean up on unmount
+  useEffect(() => {
+    return () => { cancel(); };
+  }, [cancel]);
 
   return {
     isSpeaking,

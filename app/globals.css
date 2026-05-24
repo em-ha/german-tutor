@@ -29,3 +29,37 @@ body {
   0%, 100% { transform: scaleY(0.25); }
   50% { transform: scaleY(1); }
 }
+
+@keyframes talking {
+  0%, 100% { transform: scaleY(0.25); }
+  50%       { transform: scaleY(1); }
+}
+
+@keyframes floatY {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-18px); }
+}
+
+@keyframes floatX {
+  0%, 100% { transform: translateX(0px) rotate(0deg); }
+  25%       { transform: translateX(10px) rotate(3deg); }
+  75%       { transform: translateX(-10px) rotate(-3deg); }
+}
+
+@keyframes microWiggle {
+  0%, 100% { transform: rotate(0deg) scale(1); }
+  15%       { transform: rotate(0.7deg) scale(1.012); }
+  35%       { transform: rotate(-0.4deg) scale(0.992); }
+  55%       { transform: rotate(0.3deg) scale(1.006); }
+  75%       { transform: rotate(-0.7deg) scale(0.996); }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.char-eye-inner {
+  transform-box: fill-box;
+  transform-origin: center;
+}
