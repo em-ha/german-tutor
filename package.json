@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "server": "npx tsx server/speech-engine.mts"
+    "server": "npx tsx server/speech-engine.mts",
+    "engine:create": "npx tsx server/create-engine.mts",
+    "engine:update-url": "npx tsx server/update-engine-url.mts"
   },
   "dependencies": {
     "@elevenlabs/elevenlabs-js": "^2.49.1",
