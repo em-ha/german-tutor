@@ -76,12 +76,12 @@ export function SpeakingPartner() {
       const now = Date.now();
       const msSinceSpeech = now - lastTranscriptTimeRef.current;
       const activelySpeaking = status === "listening" && msSinceSpeech < 500;
-      const floor = status === "listening" ? 0.3 : 0;
+      const floor = status === "listening" ? 0.2 : 0;
 
-      // Base target: full when actively speaking, floor otherwise
-      const baseTarget = activelySpeaking ? 1.0 : floor;
-      // Gentle sine oscillation (~1.5 Hz) while speaking — adds rhythm without real amplitude data
-      const pulse = activelySpeaking ? Math.sin(now * 0.0094) * 0.1 : 0;
+      // Base at midpoint when speaking so oscillation gives visible 0.3–0.7 range (max 70%)
+      const baseTarget = activelySpeaking ? 0.5 : floor;
+      // Sine oscillation at ~3 Hz (speech syllable rate) with ±0.2 amplitude
+      const pulse = activelySpeaking ? Math.sin(now * 0.019) * 0.2 : 0;
       const target = Math.min(1, Math.max(0, baseTarget + pulse));
 
       const prev = smoothedExcitementRef.current;
