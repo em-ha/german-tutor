@@ -10,8 +10,8 @@
  *   GROQ_API_KEY         — your Groq API key
  *   SPEECH_ENGINE_ID     — the Speech Engine ID (seng_...)
  *
- * After deploy, register the Railway public URL as the ws_url in the
- * ElevenLabs dashboard (Conversational AI → Speech Engines → your engine).
+ * After deploy, update the Speech Engine ws_url:
+ *   npm run engine:update-url wss://your-railway-url/ws
  */
 
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
@@ -41,13 +41,11 @@ Important: Always reply in German. If the user writes in English, gently remind 
 
 const httpServer = createServer();
 
-// Fetch the Speech Engine resource from ElevenLabs API, then attach to our HTTP server.
-const engine = await elevenlabs.speechEngine.get(SPEECH_ENGINE_ID);
-
-engine.attach(httpServer, "/ws", {
+// Attach the Speech Engine to our HTTP server — matches the docs pattern exactly
+elevenlabs.speechEngine.attach(SPEECH_ENGINE_ID, httpServer, "/ws", {
   debug: true,
 
-  onInit(conversationId, _session) {
+  onInit(conversationId) {
     console.log("[Speech Engine] Session started:", conversationId);
   },
 
@@ -55,7 +53,7 @@ engine.attach(httpServer, "/ws", {
     console.log("[Speech Engine] Transcript received, turns:", transcript.length);
 
     // Groq's streaming API is OpenAI-compatible; SpeechEngineSession.sendResponse
-    // natively parses choices[0].delta.content from the stream.
+    // natively parses choices[0].delta.content so we can pass the stream directly.
     const stream = await groq.chat.completions.create(
       {
         model: "llama-3.3-70b-versatile",
@@ -84,7 +82,7 @@ engine.attach(httpServer, "/ws", {
     console.log("[Speech Engine] Session disconnected");
   },
 
-  onError(err, _session) {
+  onError(err) {
     console.error("[Speech Engine] Error:", err);
   },
 });
@@ -92,5 +90,5 @@ engine.attach(httpServer, "/ws", {
 const port = Number(process.env.PORT ?? 3001);
 httpServer.listen(port, () => {
   console.log(`[Speech Engine] Listening on port ${port}`);
-  console.log(`[Speech Engine] Register this as: wss://<your-railway-url>/ws`);
+  console.log(`[Speech Engine] Register ws_url as: wss://<your-public-host>/ws`);
 });
