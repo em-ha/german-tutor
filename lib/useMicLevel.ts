@@ -41,6 +41,11 @@ export function useMicLevel() {
 
   const start = useCallback(async () => {
     if (streamRef.current || rafRef.current) return; // already running
+    // On Android Chrome and iOS Safari, a concurrent getUserMedia audio stream
+    // aborts the SpeechRecognition session (known Chromium/WebKit bug). Skip on
+    // mobile — excitement falls back to the 0.4 floor set in SpeakingPartner.
+    const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    if (isMobile) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;

@@ -56,7 +56,9 @@ export function SpeakingPartner() {
   const { mouthOpenness, onBoundary, reset: resetMouth } = useMouthAnimation();
   const { level: micLevel, start: startMic, stop: stopMic } = useMicLevel();
   // 0–1 excitement value: floored at 0.2 while listening (even on pauses) and peaks with audio
-  const excitement = status === "listening" ? Math.max(0.2, micLevel) : 0;
+  // Floor 0.4: on mobile micLevel stays 0 (getUserMedia skipped), so this gives
+  // a constant visible reaction while listening. On desktop micLevel drives 0.4→1.0.
+  const excitement = status === "listening" ? Math.max(0.4, micLevel) : 0;
 
   // Reset translation when a new message arrives
   const resetTranslation = useCallback(() => {

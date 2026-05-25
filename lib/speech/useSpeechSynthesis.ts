@@ -137,7 +137,20 @@ export function useSpeechSynthesis() {
         }
 
         setIsSpeaking(true);
-        await audio.play();
+        try {
+          await audio.play();
+        } catch (err) {
+          // NotAllowedError = autoplay blocked (no user gesture yet).
+          // Clean up the audio but return true so the caller doesn't fall
+          // through to speakBrowser — the text is already fully streamed,
+          // the user can tap the mic manually as their first interaction.
+          if (err instanceof DOMException && err.name === "NotAllowedError") {
+            cancelAudio();
+            setIsSpeaking(false);
+            return true; // handled — don't trigger speakBrowser or onEnd
+          }
+          throw err; // re-throw unexpected errors
+        }
         return true;
       } catch (err) {
         console.error("[ElevenLabs] Unexpected error:", err);
@@ -176,7 +189,16 @@ export function useSpeechSynthesis() {
 
       utterance.onstart = () => setIsSpeaking(true);
       utterance.onend = finish;
-      utterance.onerror = finish;
+      utterance.onerror = (event) => {
+        // "not-allowed" means autoplay was blocked (no user gesture yet).
+        // Don't call onEnd — leave status in "speaking" so the text stays
+        // visible and the user can tap the mic manually as their first gesture.
+        if ((event as SpeechSynthesisErrorEvent).error === "not-allowed") {
+          setIsSpeaking(false);
+          return;
+        }
+        finish();
+      };
 
       if (onBoundary) {
         utterance.onboundary = (event) => {
