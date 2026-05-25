@@ -8,7 +8,9 @@ import { useSpeechRecognition } from "@/lib/speech/useSpeechRecognition";
 import { useSpeechSynthesis } from "@/lib/speech/useSpeechSynthesis";
 import { getRandomSmallTalkTopic } from "@/lib/smallTalkTopics";
 import { streamText } from "@/lib/streamText";
+import { useMicLevel } from "@/lib/useMicLevel";
 import { useMouthAnimation } from "@/lib/useMouthAnimation";
+import { CharacterAvatar } from "./CharacterAvatar";
 import { MicControl } from "./MicControl";
 import { TranscriptDisplay, type PartnerStatus } from "./TranscriptDisplay";
 
@@ -28,15 +30,13 @@ export function SpeakingPartner() {
   // Copy feature
   const [copied, setCopied] = useState(false);
 
-  // Derive emotion from app status
+  // Derive emotion from app status.
+  // Listening uses "happy" (neutral base) so yellow comes entirely from the
+  // excitement gradient rather than the static excited-yellow face ellipse.
   const emotion: Emotion = localError
     ? "embarrassed"
-    : status === "listening"
-    ? "excited"
     : status === "thinking"
     ? "thinking"
-    : status === "speaking"
-    ? "happy"
     : "happy";
 
   const turnCountRef = useRef(0);
@@ -54,6 +54,9 @@ export function SpeakingPartner() {
   const speech = useSpeechRecognition();
   const tts = useSpeechSynthesis();
   const { mouthOpenness, onBoundary, reset: resetMouth } = useMouthAnimation();
+  const { level: micLevel, start: startMic, stop: stopMic } = useMicLevel();
+  // 0–1 excitement value: floored at 0.2 while listening (even on pauses) and peaks with audio
+  const excitement = status === "listening" ? Math.max(0.2, micLevel) : 0;
 
   // Reset translation when a new message arrives
   const resetTranslation = useCallback(() => {
@@ -181,6 +184,15 @@ export function SpeakingPartner() {
     setStatus("idle");
   }, [speech.isListening, status]);
 
+  // Start/stop mic-level analyser in sync with listening state
+  useEffect(() => {
+    if (status === "listening") {
+      void startMic();
+    } else {
+      stopMic();
+    }
+  }, [status, startMic, stopMic]);
+
   useEffect(() => {
     if (greetedRef.current) return;
     greetedRef.current = true;
@@ -282,66 +294,79 @@ export function SpeakingPartner() {
   }, [status, speech, handleUserSpeech]);
 
   const displayError = localError ?? speech.error;
+  const isActive = lastAssistantText.length > 0 || status !== "idle";
 
   return (
-    <div className="flex h-dvh flex-col bg-white dark:bg-zinc-950">
-      {/* Top bar */}
-      <header className="shrink-0 flex items-center justify-end px-4 py-3 sm:px-6">
-        <button
-          type="button"
-          className="rounded-lg border border-zinc-200 px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-900"
-          aria-label="Send feedback"
-        >
-          Feedback
-        </button>
-      </header>
+    <div className={`relative h-dvh overflow-hidden ${isActive ? "bg-zinc-900" : "bg-white dark:bg-zinc-950"}`}>
 
-      {/* Error banner */}
-      {displayError && (
-        <div
-          role="alert"
-          className="mx-4 mb-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/50 dark:text-amber-200 sm:mx-6"
-        >
-          {displayError}
-          <button
-            type="button"
-            className="ml-2 underline"
-            onClick={() => {
-              setLocalError(null);
-              speech.clearError();
-            }}
-          >
-            OK
-          </button>
-        </div>
+      {/* ── Fullscreen dome blob — behind all UI ─────────────────────────── */}
+      {isActive && (
+        <CharacterAvatar variant="dome" mouthOpenness={mouthOpenness} emotion={emotion} excitement={excitement} />
       )}
 
-      {/* Main area: character + text + action bar */}
-      <TranscriptDisplay
-        text={lastAssistantText}
-        status={status}
-        isStreaming={isStreaming}
-        onPronounceWord={(word) => tts.speak(word)}
-        mouthOpenness={mouthOpenness}
-        emotion={emotion}
-        onReplay={handleReplay}
-        canReplay={lastAssistantText.length > 0}
-        onCopy={handleCopy}
-        copied={copied}
-        onTranslate={() => { void handleTranslate(); }}
-        isTranslating={isTranslating}
-        translation={translation}
-        showTranslation={showTranslation}
-        level={level}
-        onLevelChange={setLevel}
-      />
+      {/* ── All UI — on top of blob ────────────────────────────────────────── */}
+      <div className="relative z-10 flex h-dvh flex-col">
 
-      {/* Mic button + disclaimer */}
-      <MicControl
-        status={status}
-        micSupported={speech.supported}
-        onMicPress={handleMicPress}
-      />
+        {/* Top bar */}
+        <header className="shrink-0 flex items-center justify-end px-4 py-3 sm:px-6">
+          <button
+            type="button"
+            className={`rounded-lg border px-3 py-1.5 text-sm ${
+              isActive
+                ? "border-white/20 text-white/70 hover:bg-white/10"
+                : "border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-900"
+            }`}
+            aria-label="Send feedback"
+          >
+            Feedback
+          </button>
+        </header>
+
+        {/* Error banner */}
+        {displayError && (
+          <div
+            role="alert"
+            className="mx-4 mb-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/50 dark:text-amber-200 sm:mx-6"
+          >
+            {displayError}
+            <button
+              type="button"
+              className="ml-2 underline"
+              onClick={() => {
+                setLocalError(null);
+                speech.clearError();
+              }}
+            >
+              OK
+            </button>
+          </div>
+        )}
+
+        {/* Main area: character (idle only) + text + action bar */}
+        <TranscriptDisplay
+          text={lastAssistantText}
+          status={status}
+          isStreaming={isStreaming}
+          onPronounceWord={(word) => tts.speak(word)}
+          mouthOpenness={mouthOpenness}
+          emotion={emotion}
+          onReplay={handleReplay}
+          canReplay={lastAssistantText.length > 0}
+          onCopy={handleCopy}
+          copied={copied}
+          onTranslate={() => { void handleTranslate(); }}
+          isTranslating={isTranslating}
+          translation={translation}
+          showTranslation={showTranslation}
+        />
+
+        {/* Mic button + disclaimer */}
+        <MicControl
+          status={status}
+          micSupported={speech.supported}
+          onMicPress={handleMicPress}
+        />
+      </div>
     </div>
   );
 }

@@ -17,12 +17,14 @@ type Props = {
   text: string;
   isStreaming: boolean;
   onPronounce: (word: string) => void;
+  className?: string;
 };
 
 export function ClickableTranscript({
   text,
   isStreaming,
   onPronounce,
+  className,
 }: Props) {
   const [selectedWord, setSelectedWord] = useState<string | null>(null);
   const [anchor, setAnchor] = useState<Anchor | null>(null);
@@ -69,7 +71,7 @@ export function ClickableTranscript({
 
   return (
     <>
-      <p className="text-2xl leading-relaxed font-medium text-zinc-900 sm:text-3xl dark:text-zinc-50">
+      <p className={className ?? "text-2xl leading-relaxed font-medium text-zinc-900 sm:text-3xl dark:text-zinc-50"}>
         {tokens.map((token, i) => {
           const isSpace = /^\s+$/.test(token);
           if (isSpace) {

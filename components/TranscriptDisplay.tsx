@@ -2,7 +2,6 @@
 
 import { ClickableTranscript } from "./ClickableTranscript";
 import { CharacterAvatar, type Emotion } from "./CharacterAvatar";
-import type { GermanLevel } from "@/lib/mockSpeakingPartner";
 
 export type PartnerStatus = "idle" | "listening" | "thinking" | "speaking";
 
@@ -22,11 +21,7 @@ type Props = {
   isTranslating: boolean;
   translation: string | null;
   showTranslation: boolean;
-  level: GermanLevel;
-  onLevelChange: (level: GermanLevel) => void;
 };
-
-const LEVELS: GermanLevel[] = ["A1", "A2", "B1"];
 
 export function TranscriptDisplay({
   text,
@@ -43,136 +38,75 @@ export function TranscriptDisplay({
   isTranslating,
   translation,
   showTranslation,
-  level,
-  onLevelChange,
 }: Props) {
-  const isListening = status === "listening";
+  // Active = any text exists or app is doing something
+  const isActive = text.length > 0 || status !== "idle";
   const hasText = text.length > 0;
 
-  // Cycle level: A1 → A2 → B1 → A1
-  const handleLevelCycle = () => {
-    const idx = LEVELS.indexOf(level);
-    onLevelChange(LEVELS[(idx + 1) % LEVELS.length]);
-  };
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {/* Character area — fills available vertical space */}
-      <div className="flex flex-1 items-center justify-center overflow-hidden">
-        <CharacterAvatar mouthOpenness={mouthOpenness} emotion={emotion} />
-      </div>
-
-      {/* Text + action area */}
-      <div className="shrink-0 px-6 pb-3 text-center">
-        {/* Status indicator */}
-        <p
-          className="mb-3 text-xs font-semibold uppercase tracking-widest text-emerald-600 dark:text-emerald-400"
-          role="status"
-          aria-live="polite"
-        >
-          {isListening
-            ? "Listening…"
-            : status === "thinking"
-            ? "Thinking…"
-            : status === "speaking"
-            ? "Speaking…"
-            : " "}
+  if (!isActive) {
+    // ── IDLE STATE ─────────────────────────────────────────────────────────
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 px-6">
+        <CharacterAvatar mouthOpenness={mouthOpenness} emotion={emotion} size={200} />
+        <p className="text-base text-[#494949] dark:text-zinc-400">
+          Tap the mic and speak in German
         </p>
+      </div>
+    );
+  }
 
-        {/* Main content: waveform, text, or empty state */}
-        <div className="min-h-[3.5rem]">
-          {isListening ? (
-            <div
-              className="flex items-center justify-center gap-1.5"
-              style={{ height: 56 }}
-              aria-hidden
-            >
-              {[0, 1, 2, 3, 4].map((i) => (
-                <div
-                  key={i}
-                  className="w-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400"
-                  style={{
-                    height: 48,
-                    transformOrigin: "center",
-                    animation: "waveform 0.9s ease-in-out infinite",
-                    animationDelay: `${i * 0.12}s`,
-                  }}
-                />
-              ))}
-            </div>
-          ) : hasText ? (
-            <div className="relative">
-              <ClickableTranscript
-                text={text}
-                isStreaming={isStreaming}
-                onPronounce={onPronounceWord}
-              />
-              {isStreaming && (
-                <span
-                  className="ml-0.5 inline-block h-7 w-0.5 animate-pulse bg-emerald-600 align-middle dark:bg-emerald-400"
-                  aria-hidden
-                />
-              )}
-            </div>
-          ) : (
-            <p className="text-base text-zinc-400 dark:text-zinc-500">
-              Tap the mic and speak in German
+  // ── ACTIVE STATE ──────────────────────────────────────────────────────────
+  // Character is rendered in SpeakingPartner (absolutely positioned behind this).
+  // pt-[35dvh] pins the text to start below the face (which occupies the top ~30dvh).
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-start overflow-y-auto pt-[35dvh] pb-4 px-6 text-center">
+      {hasText ? (
+        <div className="flex w-full max-w-sm flex-col items-center gap-2">
+          {/* German text */}
+          <ClickableTranscript
+            text={text}
+            isStreaming={isStreaming}
+            onPronounce={onPronounceWord}
+            className="text-[32px] font-semibold leading-snug text-zinc-900"
+          />
+
+          {/* Translation */}
+          {showTranslation && translation && (
+            <p className="text-[20px] font-semibold leading-snug text-zinc-700 transition-opacity duration-300">
+              {translation}
             </p>
           )}
+
+          {/* Action bar — 3 icons */}
+          {!isStreaming && (
+            <div className="mt-1 flex items-center gap-2">
+              <ActionButton onClick={onCopy} label="Copy text">
+                {copied ? <CheckIcon /> : <CopyIcon />}
+              </ActionButton>
+
+              <ActionButton
+                onClick={onReplay}
+                disabled={!canReplay || status === "speaking"}
+                label="Replay"
+              >
+                <SpeakerIcon />
+              </ActionButton>
+
+              <ActionButton
+                onClick={onTranslate}
+                disabled={isTranslating}
+                label={showTranslation ? "Hide translation" : "Translate"}
+                active={showTranslation}
+              >
+                {isTranslating ? <SpinnerIcon /> : <TranslateIcon />}
+              </ActionButton>
+            </div>
+          )}
         </div>
-
-        {/* Translation */}
-        {showTranslation && translation && (
-          <p
-            className="mt-3 text-base italic text-zinc-500 transition-all duration-300 dark:text-zinc-400"
-            style={{
-              opacity: showTranslation ? 1 : 0,
-              transform: showTranslation ? "translateY(0)" : "translateY(4px)",
-            }}
-          >
-            {translation}
-          </p>
-        )}
-
-        {/* Action bar */}
-        {hasText && !isStreaming && (
-          <div className="mt-4 flex items-center justify-center gap-5">
-            {/* Replay */}
-            <ActionButton
-              onClick={onReplay}
-              disabled={!canReplay || status === "speaking"}
-              label="Replay"
-            >
-              <ReplayIcon />
-            </ActionButton>
-
-            {/* Level — cycles on tap */}
-            <button
-              type="button"
-              onClick={handleLevelCycle}
-              className="flex h-10 min-w-[3rem] items-center justify-center rounded-xl border border-zinc-200 bg-zinc-50 px-3 text-sm font-bold text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
-              aria-label={`German level: ${level}. Tap to change.`}
-            >
-              {level}
-            </button>
-
-            {/* Copy */}
-            <ActionButton onClick={onCopy} label="Copy text">
-              {copied ? <CheckIcon /> : <CopyIcon />}
-            </ActionButton>
-
-            {/* Translate */}
-            <ActionButton
-              onClick={onTranslate}
-              disabled={isTranslating}
-              label={showTranslation ? "Hide translation" : "Translate"}
-              active={showTranslation}
-            >
-              {isTranslating ? <SpinnerIcon /> : <GlobeIcon />}
-            </ActionButton>
-          </div>
-        )}
-      </div>
+      ) : (
+        // Thinking state — no text yet
+        <p className="text-base text-zinc-700">…</p>
+      )}
     </div>
   );
 }
@@ -196,10 +130,10 @@ function ActionButton({
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
-      className={`flex h-10 w-10 items-center justify-center rounded-xl border transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+      className={`flex h-10 w-10 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
         active
-          ? "border-emerald-400 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400"
-          : "border-zinc-200 bg-zinc-50 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800"
+          ? "bg-black/20 text-zinc-900"
+          : "text-zinc-800 hover:bg-black/10"
       }`}
     >
       {children}
@@ -207,20 +141,11 @@ function ActionButton({
   );
 }
 
-// ── Icons ─────────────────────────────────────────────────────────────────────
-
-function ReplayIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-      <polyline points="1 4 1 10 7 10" />
-      <path d="M3.51 15a9 9 0 102.13-9.36L1 10" />
-    </svg>
-  );
-}
+// ── Icons ──────────────────────────────────────────────────────────────────
 
 function CopyIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
       <rect x="9" y="9" width="13" height="13" rx="2" />
       <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
     </svg>
@@ -229,18 +154,30 @@ function CopyIcon() {
 
 function CheckIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden>
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden>
       <polyline points="20 6 9 17 4 12" />
     </svg>
   );
 }
 
-function GlobeIcon() {
+function SpeakerIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-      <circle cx="12" cy="12" r="10" />
-      <line x1="2" y1="12" x2="22" y2="12" />
-      <path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+      <path d="M15.54 8.46a5 5 0 010 7.07" />
+    </svg>
+  );
+}
+
+function TranslateIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <path d="M5 8l6 6" />
+      <path d="M4 14l6-6 2-3" />
+      <path d="M2 5h12" />
+      <path d="M7 2h1" />
+      <path d="M22 22l-5-10-5 10" />
+      <path d="M14 18h6" />
     </svg>
   );
 }
@@ -248,8 +185,8 @@ function GlobeIcon() {
 function SpinnerIcon() {
   return (
     <svg
-      width="18"
-      height="18"
+      width="22"
+      height="22"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"

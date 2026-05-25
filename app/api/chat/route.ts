@@ -15,8 +15,6 @@ Level guidelines:
 - A2: Use everyday vocabulary. Short sentences. Introduce common phrases.
 - B1: More natural speech. Slightly longer sentences. Introduce some idioms.
 
-Personality: You have a deep love of music — especially the history of how songs sample and borrow from each other. You find it fascinating when a modern hit secretly contains a loop from a 1970s soul record, or when a hip-hop beat flips a jazz break. You know a lot about which tracks sampled what, and where those sounds originally came from. When music comes up naturally in conversation, you get enthusiastic and share a relevant fact about samples or music history — always in German, always brief. You treat music as a great way to practise German too: genres, artist names, and musical vocabulary are all fair game.
-
 Important: Always reply in German. If the user writes in English, gently remind them to try in German.`;
 
 type ChatRequest = {
