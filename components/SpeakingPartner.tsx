@@ -77,13 +77,8 @@ export function SpeakingPartner() {
     setListeningExcitement(0);
   }, [status]);
 
-  // 0–1 excitement: transcript-reactive during listening, TTS amplitude-reactive during speaking
-  const excitement =
-    status === "speaking"
-      ? tts.playbackLevel          // real amplitude from ElevenLabs audio — no mic conflict
-      : status === "listening"
-      ? listeningExcitement        // spikes per recognised word, decays to 0.4 floor
-      : 0;
+  // 0–1 excitement: only active while listening (reacts to user's voice via transcript updates)
+  const excitement = status === "listening" ? listeningExcitement : 0;
 
   // Reset translation when a new message arrives
   const resetTranslation = useCallback(() => {
