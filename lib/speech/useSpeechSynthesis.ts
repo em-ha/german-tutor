@@ -46,19 +46,31 @@ function scheduleWordBoundaries(
 export function useSpeechSynthesis() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [autoSpeak, setAutoSpeak] = useState(true);
+  const [playbackLevel, setPlaybackLevel] = useState(0);
   const supported = useSynthesisSupported();
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const boundaryTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const playbackRafRef = useRef<number | null>(null);
 
   const cancelBoundaryTimers = useCallback(() => {
     boundaryTimersRef.current.forEach(clearTimeout);
     boundaryTimersRef.current = [];
   }, []);
 
+  const stopPlaybackAnalyser = useCallback(() => {
+    if (playbackRafRef.current) {
+      cancelAnimationFrame(playbackRafRef.current);
+      playbackRafRef.current = null;
+    }
+    setPlaybackLevel(0);
+  }, []);
+
   const cancelAudio = useCallback(() => {
     cancelBoundaryTimers();
+    stopPlaybackAnalyser();
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.onended = null;
@@ -69,7 +81,7 @@ export function useSpeechSynthesis() {
       URL.revokeObjectURL(audioUrlRef.current);
       audioUrlRef.current = null;
     }
-  }, [cancelBoundaryTimers]);
+  }, [cancelBoundaryTimers, stopPlaybackAnalyser]);
 
   const cancel = useCallback(() => {
     if (typeof window !== "undefined") {
@@ -134,6 +146,45 @@ export function useSpeechSynthesis() {
             setTimeout(() => onBoundary(word), startMs)
           );
           boundaryTimersRef.current = timers;
+        }
+
+        // Connect audio element to Web Audio analyser for amplitude-reactive excitement.
+        // createMediaElementSource taps the output pipeline — no getUserMedia, no mic conflict.
+        try {
+          let ctx = audioCtxRef.current;
+          if (!ctx || ctx.state === "closed") {
+            ctx = new AudioContext();
+            audioCtxRef.current = ctx;
+          }
+          if (ctx.state === "suspended") await ctx.resume().catch(() => {});
+
+          const source = ctx.createMediaElementSource(audio);
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 512;
+          analyser.smoothingTimeConstant = 0.5;
+          source.connect(analyser);
+          source.connect(ctx.destination); // must route to speakers
+
+          const data = new Uint8Array(analyser.fftSize);
+          let smoothed = 0;
+          const tick = () => {
+            analyser.getByteTimeDomainData(data);
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) {
+              const v = (data[i] - 128) / 128;
+              sum += v * v;
+            }
+            const rms = Math.sqrt(sum / data.length);
+            const norm = Math.min(1, Math.max(0, (rms - 0.01) * 5));
+            smoothed = norm > smoothed
+              ? smoothed + (norm - smoothed) * 0.5
+              : smoothed + (norm - smoothed) * 0.1;
+            setPlaybackLevel(smoothed);
+            playbackRafRef.current = requestAnimationFrame(tick);
+          };
+          playbackRafRef.current = requestAnimationFrame(tick);
+        } catch {
+          // Web Audio not available — excitement stays at 0, audio still plays fine
         }
 
         setIsSpeaking(true);
@@ -245,7 +296,13 @@ export function useSpeechSynthesis() {
 
   // Clean up on unmount
   useEffect(() => {
-    return () => { cancel(); };
+    return () => {
+      cancel();
+      if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+        void audioCtxRef.current.close();
+      }
+      audioCtxRef.current = null;
+    };
   }, [cancel]);
 
   return {
@@ -253,6 +310,7 @@ export function useSpeechSynthesis() {
     autoSpeak,
     setAutoSpeak,
     supported,
+    playbackLevel,
     speak,
     cancel,
   };

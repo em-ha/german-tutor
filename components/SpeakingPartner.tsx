@@ -55,10 +55,35 @@ export function SpeakingPartner() {
   const tts = useSpeechSynthesis();
   const { mouthOpenness, onBoundary, reset: resetMouth } = useMouthAnimation();
   const { level: micLevel, start: startMic, stop: stopMic } = useMicLevel();
-  // 0–1 excitement value: floored at 0.2 while listening (even on pauses) and peaks with audio
-  // Floor 0.4: on mobile micLevel stays 0 (getUserMedia skipped), so this gives
-  // a constant visible reaction while listening. On desktop micLevel drives 0.4→1.0.
-  const excitement = status === "listening" ? Math.max(0.4, micLevel) : 0;
+
+  // Listening excitement: driven by speech.transcript interim updates (no getUserMedia needed).
+  // Spikes to 1.0 when the user is actively speaking, decays to 0.4 floor after ~350ms of silence.
+  // Works on mobile — no concurrent getUserMedia conflict with webkitSpeechRecognition.
+  const [listeningExcitement, setListeningExcitement] = useState(0);
+  const excitementDecayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Spike yellow when transcript updates (user is speaking)
+  useEffect(() => {
+    if (status !== "listening" || !speech.transcript) return;
+    setListeningExcitement(1.0);
+    if (excitementDecayRef.current) clearTimeout(excitementDecayRef.current);
+    excitementDecayRef.current = setTimeout(() => setListeningExcitement(0.4), 350);
+  }, [speech.transcript, status]);
+
+  // Reset when not listening
+  useEffect(() => {
+    if (status === "listening") return;
+    if (excitementDecayRef.current) clearTimeout(excitementDecayRef.current);
+    setListeningExcitement(0);
+  }, [status]);
+
+  // 0–1 excitement: transcript-reactive during listening, TTS amplitude-reactive during speaking
+  const excitement =
+    status === "speaking"
+      ? tts.playbackLevel          // real amplitude from ElevenLabs audio — no mic conflict
+      : status === "listening"
+      ? listeningExcitement        // spikes per recognised word, decays to 0.4 floor
+      : 0;
 
   // Reset translation when a new message arrives
   const resetTranslation = useCallback(() => {
