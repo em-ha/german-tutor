@@ -1,26 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { GermanLevel } from "@/lib/mockSpeakingPartner";
-import type { Emotion } from "./CharacterAvatar";
+import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { OPENING_LINE } from "@/lib/prompts";
-import { useSpeechRecognition } from "@/lib/speech/useSpeechRecognition";
-import { useSpeechSynthesis } from "@/lib/speech/useSpeechSynthesis";
-import { getRandomSmallTalkTopic } from "@/lib/smallTalkTopics";
-import { streamText } from "@/lib/streamText";
-import { useMicLevel } from "@/lib/useMicLevel";
 import { useMouthAnimation } from "@/lib/useMouthAnimation";
+import type { Emotion } from "./CharacterAvatar";
 import { CharacterAvatar } from "./CharacterAvatar";
 import { MicControl } from "./MicControl";
 import { TranscriptDisplay, type PartnerStatus } from "./TranscriptDisplay";
 
-export function SpeakingPartner() {
-  const [status, setStatus] = useState<PartnerStatus>("idle");
-  const [lastAssistantText, setLastAssistantText] = useState("");
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [level, setLevel] = useState<GermanLevel>("A2");
+// ── Inner component (must be inside ConversationProvider) ────────────────────
+function SpeakingPartnerContent() {
   const [localError, setLocalError] = useState<string | null>(null);
-  const [topicLabel, setTopicLabel] = useState<string | null>(null);
+  const [lastAssistantText, setLastAssistantText] = useState("");
 
   // Translate feature
   const [translation, setTranslation] = useState<string | null>(null);
@@ -30,67 +22,101 @@ export function SpeakingPartner() {
   // Copy feature
   const [copied, setCopied] = useState(false);
 
-  // Derive emotion from app status.
-  // Listening uses "happy" (neutral base) so yellow comes entirely from the
-  // excitement gradient rather than the static excited-yellow face ellipse.
-  const emotion: Emotion = localError
-    ? "embarrassed"
-    : status === "thinking"
-    ? "thinking"
-    : "happy";
-
-  const turnCountRef = useRef(0);
-  const lastAssistantRef = useRef<string | null>(null);
-  const lastTopicIdRef = useRef<string | null>(null);
-  const greetedRef = useRef(false);
-  const processingRef = useRef(false);
-  const streamAbortRef = useRef<AbortController | null>(null);
-  // Auto-listen: start mic automatically after speaking
-  const pendingAutoListenRef = useRef(false);
-  const manualStopRef = useRef(false);
-  // Stable ref to handleUserSpeech to avoid circular dep in deliverReply
-  const handleUserSpeechRef = useRef<((text: string) => void) | null>(null);
-
-  const speech = useSpeechRecognition();
-  const tts = useSpeechSynthesis();
   const { mouthOpenness, onBoundary, reset: resetMouth } = useMouthAnimation();
-  const { level: micLevel, start: startMic, stop: stopMic } = useMicLevel();
 
-  // RAF-driven smooth excitement — fast attack / slow decay, gentle oscillation while speaking.
-  // Driven by speech.transcript interim updates (no getUserMedia → no mobile mic conflict).
-  const lastTranscriptTimeRef = useRef(0);
+  // ── ElevenLabs Speech Engine conversation ───────────────────────────────────
+  const conversation = useConversation({
+    onConnect: () => {
+      setLocalError(null);
+    },
+    onDisconnect: () => {
+      resetMouth();
+      setExcitement(0);
+      smoothedExcitementRef.current = 0;
+    },
+    onError: (message) => {
+      setLocalError(typeof message === "string" ? message : "Connection error");
+    },
+    onMessage: ({ message, source }) => {
+      // Capture the latest agent utterance for translate/copy
+      if (source === "ai") {
+        setLastAssistantText(message);
+        resetTranslation();
+      }
+    },
+    onModeChange: ({ mode }) => {
+      if (mode === "speaking") {
+        resetMouth();
+        resetTranslation();
+        setLastAssistantText(""); // will be set by onMessage as it streams in
+      } else {
+        resetMouth();
+      }
+    },
+  });
+
+  // Derive a PartnerStatus from the ElevenLabs conversation state
+  const status: PartnerStatus =
+    conversation.status === "disconnected" || conversation.status === "error"
+      ? "idle"
+      : conversation.status === "connecting"
+      ? "thinking"
+      : conversation.mode === "speaking"
+      ? "speaking"
+      : "listening";
+
+  const isActive = lastAssistantText.length > 0 || status !== "idle";
+
+  // ── Mouth animation while agent is speaking ─────────────────────────────────
+  // Simulate word boundaries at speech rhythm since ElevenLabs Speech Engine
+  // doesn't expose per-word TTS timestamps in this integration.
+  const mouthTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    if (conversation.isSpeaking) {
+      let i = 0;
+      const words = ["und", "ich", "ein", "das", "ist", "du"];
+      mouthTimerRef.current = setInterval(() => {
+        onBoundary(words[i % words.length]);
+        i++;
+      }, 280);
+    } else {
+      if (mouthTimerRef.current) {
+        clearInterval(mouthTimerRef.current);
+        mouthTimerRef.current = null;
+      }
+      resetMouth();
+    }
+    return () => {
+      if (mouthTimerRef.current) clearInterval(mouthTimerRef.current);
+    };
+  }, [conversation.isSpeaking, onBoundary, resetMouth]);
+
+  // ── RAF-driven excitement — reads real mic amplitude from ElevenLabs SDK ────
+  // getInputVolume() taps the same audio pipeline ElevenLabs already owns;
+  // no separate getUserMedia needed → no mobile mic conflict.
+  const [excitement, setExcitement] = useState(0);
   const smoothedExcitementRef = useRef(0);
   const excitementRafRef = useRef<number | null>(null);
-  const [excitement, setExcitement] = useState(0);
 
-  // Track when user last produced speech (interim results)
-  useEffect(() => {
-    if (status === "listening" && speech.transcript) {
-      lastTranscriptTimeRef.current = Date.now();
-    }
-  }, [speech.transcript, status]);
-
-  // 60fps loop: smoothly interpolate toward target, add gentle oscillation when speaking
   useEffect(() => {
     const tick = () => {
-      const now = Date.now();
-      const msSinceSpeech = now - lastTranscriptTimeRef.current;
-      const activelySpeaking = status === "listening" && msSinceSpeech < 500;
-      const floor = status === "listening" ? 0.2 : 0;
+      const isListening = status === "listening";
 
-      // Base at midpoint when speaking so oscillation gives visible 0.3–0.7 range (max 70%)
-      const baseTarget = activelySpeaking ? 0.5 : floor;
-      // Sine oscillation at ~3 Hz (speech syllable rate) with ±0.2 amplitude
-      const pulse = activelySpeaking ? Math.sin(now * 0.019) * 0.2 : 0;
-      const target = Math.min(1, Math.max(0, baseTarget + pulse));
+      // Read real mic amplitude when listening (0–1 normalised by ElevenLabs SDK)
+      const inputVol = isListening ? conversation.getInputVolume() : 0;
+      const floor = isListening ? 0.2 : 0;
+
+      // Base at midpoint when voice detected so oscillation gives visible 0.3–0.7 range
+      const isSpeaking = inputVol > 0.05;
+      const baseTarget = isSpeaking ? 0.5 : floor;
+      const pulse = isSpeaking ? Math.sin(Date.now() * 0.019) * 0.2 : 0;
+      const target = Math.min(0.7, Math.max(0, baseTarget + pulse));
 
       const prev = smoothedExcitementRef.current;
-      // Fast attack (0.4), slow decay (0.06) — same feel as original useMicLevel
-      const next = target > prev
-        ? prev + (target - prev) * 0.4
-        : prev + (target - prev) * 0.06;
+      // Fast attack (0.4), slow decay (0.06)
+      const next =
+        target > prev ? prev + (target - prev) * 0.4 : prev + (target - prev) * 0.06;
       smoothedExcitementRef.current = next;
-
       if (Math.abs(next - prev) > 0.004) setExcitement(next);
 
       excitementRafRef.current = requestAnimationFrame(tick);
@@ -99,184 +125,61 @@ export function SpeakingPartner() {
     return () => {
       if (excitementRafRef.current) cancelAnimationFrame(excitementRafRef.current);
     };
-  }, [status, speech.transcript]);
+  }, [status, conversation]);
 
-  // Reset translation when a new message arrives
+  // ── Derive emotion ──────────────────────────────────────────────────────────
+  const emotion: Emotion = localError
+    ? "embarrassed"
+    : status === "thinking"
+    ? "thinking"
+    : "happy";
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
   const resetTranslation = useCallback(() => {
     setTranslation(null);
     setShowTranslation(false);
   }, []);
 
-  const deliverReply = useCallback(
-    async (replyText: string, countTurn: boolean) => {
-      streamAbortRef.current?.abort();
+  // ── Mic press ───────────────────────────────────────────────────────────────
+  const handleMicPress = useCallback(async () => {
+    setLocalError(null);
 
-      setStatus("speaking");
-      setIsStreaming(false);
+    if (conversation.status === "connected" || conversation.status === "connecting") {
+      void conversation.endSession();
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/token");
+      if (!res.ok) throw new Error(`Token error ${res.status}`);
+      const { token } = (await res.json()) as { token: string };
+
       setLastAssistantText("");
       resetTranslation();
 
-      lastAssistantRef.current = replyText;
-      if (countTurn) turnCountRef.current += 1;
-
-      if (tts.autoSpeak && tts.supported) {
-        // Reveal words in sync with audio as each word is spoken
-        const words = replyText.trim().split(/\s+/);
-        let revealedCount = 0;
-
-        const syncedBoundary = (word: string) => {
-          onBoundary(word); // mouth animation
-          revealedCount = Math.min(revealedCount + 1, words.length);
-          setLastAssistantText(words.slice(0, revealedCount).join(" "));
-        };
-
-        tts.speak(
-          replyText,
-          () => {
-            setLastAssistantText(replyText); // ensure full text shown at end
-            resetMouth();
-            pendingAutoListenRef.current = true;
-            setStatus("idle");
-          },
-          syncedBoundary
-        );
-      } else {
-        // No TTS — stream text character by character
-        const controller = new AbortController();
-        streamAbortRef.current = controller;
-        setIsStreaming(true);
-        try {
-          await streamText(replyText, (partial) => setLastAssistantText(partial), controller.signal);
-        } catch (e) {
-          if (!(e instanceof DOMException && e.name === "AbortError")) {
-            setLastAssistantText(replyText);
-          }
-        }
-        setIsStreaming(false);
-        setStatus("idle");
-      }
-    },
-    [tts, onBoundary, resetMouth, resetTranslation]
-  );
-
-  const handleUserSpeech = useCallback(
-    async (userText: string) => {
-      if (processingRef.current) return;
-      processingRef.current = true;
-      speech.stop();
-
-      setStatus("thinking");
-
-      try {
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userText,
-            level,
-            turnCount: turnCountRef.current,
-            lastAssistantText: lastAssistantRef.current,
-            topicContext: topicLabel,
-          }),
-        });
-
-        if (!res.ok) throw new Error(`Chat API error ${res.status}`);
-        const data = await res.json() as { reply?: string; error?: string };
-        const reply = data.reply ?? "Entschuldigung, ich habe dich nicht verstanden.";
-        await deliverReply(reply, true);
-      } catch (err) {
-        console.error("[Chat]", err);
-        setLocalError("Connection error — please try again.");
-        setStatus("idle");
-      }
-
-      processingRef.current = false;
-    },
-    [level, topicLabel, deliverReply, speech]
-  );
-
-  // Keep handleUserSpeechRef in sync to avoid circular dep in deliverReply
-  useEffect(() => {
-    handleUserSpeechRef.current = (text: string) => { void handleUserSpeech(text); };
-  }, [handleUserSpeech]);
-
-  // Auto-start listening after speaking ends
-  useEffect(() => {
-    if (status !== "idle") return;
-    if (!pendingAutoListenRef.current) return;
-    pendingAutoListenRef.current = false;
-    if (manualStopRef.current) return;
-    const timer = setTimeout(() => {
-      if (processingRef.current) return;
-      processingRef.current = false;
-      setStatus("listening");
-      speech.start((finalText) => {
-        handleUserSpeechRef.current?.(finalText);
+      conversation.startSession({
+        conversationToken: token,
+        overrides: {
+          agent: { firstMessage: OPENING_LINE },
+        },
       });
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [status, speech]);
-
-  // Auto-restart listening after silence (recognition ended with no speech)
-  useEffect(() => {
-    if (speech.isListening) return;
-    if (status !== "listening") return;
-    if (processingRef.current) return;
-    // Recognition ended silently — restart unless user manually stopped
-    pendingAutoListenRef.current = !manualStopRef.current;
-    setStatus("idle");
-  }, [speech.isListening, status]);
-
-  // Start/stop mic-level analyser in sync with listening state
-  useEffect(() => {
-    if (status === "listening") {
-      void startMic();
-    } else {
-      stopMic();
+    } catch (err) {
+      console.error("[SpeakingPartner] Connection error:", err);
+      setLocalError("Could not connect — please try again.");
     }
-  }, [status, startMic, stopMic]);
+  }, [conversation, resetTranslation]);
 
-  useEffect(() => {
-    if (greetedRef.current) return;
-    greetedRef.current = true;
-    void deliverReply(OPENING_LINE, false);
-  }, [deliverReply]);
-
-  // ── Random topic (kept for future use, button not shown) ──────────────────
-  const handleRandomTopic = useCallback(() => {
-    if (status !== "idle" || isStreaming) return;
-    setLocalError(null);
-    speech.clearError();
-    speech.stop();
-    manualStopRef.current = false;
-
-    const pick = getRandomSmallTalkTopic(level, lastTopicIdRef.current);
-    lastTopicIdRef.current = pick.topicId;
-    setTopicLabel(pick.label);
-    turnCountRef.current = 0;
-    lastAssistantRef.current = null;
-
-    void deliverReply(pick.text, false);
-  }, [status, isStreaming, level, speech, deliverReply]);
-  // Suppress unused warning — kept for future use
-  void handleRandomTopic;
-
-  // ── Translate ─────────────────────────────────────────────────────────────
+  // ── Translate ───────────────────────────────────────────────────────────────
   const handleTranslate = useCallback(async () => {
     if (!lastAssistantText) return;
-
-    // Toggle off if already showing
     if (showTranslation) {
       setShowTranslation(false);
       return;
     }
-
-    // Show cached translation immediately if available
     if (translation) {
       setShowTranslation(true);
       return;
     }
-
     setIsTranslating(true);
     try {
       const res = await fetch("/api/translate", {
@@ -285,7 +188,7 @@ export function SpeakingPartner() {
         body: JSON.stringify({ text: lastAssistantText }),
       });
       if (!res.ok) throw new Error(`Translate API error ${res.status}`);
-      const data = await res.json() as { translation?: string };
+      const data = (await res.json()) as { translation?: string };
       setTranslation(data.translation ?? null);
       setShowTranslation(true);
     } catch (err) {
@@ -294,7 +197,7 @@ export function SpeakingPartner() {
     setIsTranslating(false);
   }, [lastAssistantText, showTranslation, translation]);
 
-  // ── Copy ──────────────────────────────────────────────────────────────────
+  // ── Copy ────────────────────────────────────────────────────────────────────
   const handleCopy = useCallback(async () => {
     if (!lastAssistantText) return;
     try {
@@ -306,50 +209,34 @@ export function SpeakingPartner() {
     }
   }, [lastAssistantText]);
 
-  // ── Replay ────────────────────────────────────────────────────────────────
+  // ── Replay ──────────────────────────────────────────────────────────────────
   const handleReplay = useCallback(() => {
     if (!lastAssistantText || status === "speaking") return;
-    setStatus("speaking");
-    tts.speak(lastAssistantText, () => { setStatus("idle"); resetMouth(); }, onBoundary);
-  }, [lastAssistantText, status, tts, onBoundary, resetMouth]);
+    // Ask the agent to repeat (it will re-speak via ElevenLabs TTS)
+    conversation.sendUserMessage("Kannst du das bitte wiederholen?");
+  }, [lastAssistantText, status, conversation]);
 
-  // ── Mic ───────────────────────────────────────────────────────────────────
-  const handleMicPress = useCallback(() => {
-    setLocalError(null);
-    speech.clearError();
-
-    if (status === "listening") {
-      manualStopRef.current = true;
-      pendingAutoListenRef.current = false;
-      speech.stop();
-      if (!processingRef.current) setStatus("idle");
-      return;
-    }
-
-    if (status !== "idle") return;
-
-    manualStopRef.current = false;
-    processingRef.current = false;
-    setStatus("listening");
-    speech.start((finalText) => {
-      void handleUserSpeech(finalText);
-    });
-  }, [status, speech, handleUserSpeech]);
-
-  const displayError = localError ?? speech.error;
-  const isActive = lastAssistantText.length > 0 || status !== "idle";
+  // ── Render ──────────────────────────────────────────────────────────────────
+  const displayError = localError;
 
   return (
-    <div className={`relative h-dvh overflow-hidden ${isActive ? "bg-zinc-900" : "bg-white dark:bg-zinc-950"}`}>
-
-      {/* ── Fullscreen dome blob — behind all UI ─────────────────────────── */}
+    <div
+      className={`relative h-dvh overflow-hidden ${
+        isActive ? "bg-zinc-900" : "bg-white dark:bg-zinc-950"
+      }`}
+    >
+      {/* Fullscreen dome blob — behind all UI */}
       {isActive && (
-        <CharacterAvatar variant="dome" mouthOpenness={mouthOpenness} emotion={emotion} excitement={excitement} />
+        <CharacterAvatar
+          variant="dome"
+          mouthOpenness={mouthOpenness}
+          emotion={emotion}
+          excitement={excitement}
+        />
       )}
 
-      {/* ── All UI — on top of blob ────────────────────────────────────────── */}
+      {/* All UI — on top of blob */}
       <div className="relative z-10 flex h-dvh flex-col">
-
         {/* Top bar */}
         <header className="shrink-0 flex items-center justify-end px-4 py-3 sm:px-6">
           <button
@@ -375,29 +262,31 @@ export function SpeakingPartner() {
             <button
               type="button"
               className="ml-2 underline"
-              onClick={() => {
-                setLocalError(null);
-                speech.clearError();
-              }}
+              onClick={() => setLocalError(null)}
             >
               OK
             </button>
           </div>
         )}
 
-        {/* Main area: character (idle only) + text + action bar */}
+        {/* Main area: character + text + action bar */}
         <TranscriptDisplay
           text={lastAssistantText}
           status={status}
-          isStreaming={isStreaming}
-          onPronounceWord={(word) => tts.speak(word)}
+          isStreaming={false}
+          onPronounceWord={(word) => {
+            // Re-use the conversation to ask for pronunciation? Or just skip.
+            void word;
+          }}
           mouthOpenness={mouthOpenness}
           emotion={emotion}
           onReplay={handleReplay}
           canReplay={lastAssistantText.length > 0}
           onCopy={handleCopy}
           copied={copied}
-          onTranslate={() => { void handleTranslate(); }}
+          onTranslate={() => {
+            void handleTranslate();
+          }}
           isTranslating={isTranslating}
           translation={translation}
           showTranslation={showTranslation}
@@ -406,10 +295,21 @@ export function SpeakingPartner() {
         {/* Mic button + disclaimer */}
         <MicControl
           status={status}
-          micSupported={speech.supported}
-          onMicPress={handleMicPress}
+          micSupported={true}
+          onMicPress={() => {
+            void handleMicPress();
+          }}
         />
       </div>
     </div>
+  );
+}
+
+// ── Public export (wraps in ConversationProvider) ────────────────────────────
+export function SpeakingPartner() {
+  return (
+    <ConversationProvider>
+      <SpeakingPartnerContent />
+    </ConversationProvider>
   );
 }
