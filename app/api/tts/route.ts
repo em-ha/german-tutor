@@ -30,10 +30,11 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         text,
         model_id: "eleven_multilingual_v2",
+        language_code: "de", // forces German prosody + question uptalk
         voice_settings: {
-          stability: 0.25,
+          stability: 0.50,        // was 0.25 — more consistent, natural delivery
           similarity_boost: 0.75,
-          style: 0.65,
+          style: 0.30,            // was 0.65 — less theatrical, more conversational
           use_speaker_boost: true,
         },
       }),
