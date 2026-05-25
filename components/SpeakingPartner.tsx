@@ -56,29 +56,50 @@ export function SpeakingPartner() {
   const { mouthOpenness, onBoundary, reset: resetMouth } = useMouthAnimation();
   const { level: micLevel, start: startMic, stop: stopMic } = useMicLevel();
 
-  // Listening excitement: driven by speech.transcript interim updates (no getUserMedia needed).
-  // Spikes to 1.0 when the user is actively speaking, decays to 0.4 floor after ~350ms of silence.
-  // Works on mobile — no concurrent getUserMedia conflict with webkitSpeechRecognition.
-  const [listeningExcitement, setListeningExcitement] = useState(0);
-  const excitementDecayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // RAF-driven smooth excitement — fast attack / slow decay, gentle oscillation while speaking.
+  // Driven by speech.transcript interim updates (no getUserMedia → no mobile mic conflict).
+  const lastTranscriptTimeRef = useRef(0);
+  const smoothedExcitementRef = useRef(0);
+  const excitementRafRef = useRef<number | null>(null);
+  const [excitement, setExcitement] = useState(0);
 
-  // Spike yellow when transcript updates (user is speaking)
+  // Track when user last produced speech (interim results)
   useEffect(() => {
-    if (status !== "listening" || !speech.transcript) return;
-    setListeningExcitement(1.0);
-    if (excitementDecayRef.current) clearTimeout(excitementDecayRef.current);
-    excitementDecayRef.current = setTimeout(() => setListeningExcitement(0.4), 350);
+    if (status === "listening" && speech.transcript) {
+      lastTranscriptTimeRef.current = Date.now();
+    }
   }, [speech.transcript, status]);
 
-  // Reset when not listening
+  // 60fps loop: smoothly interpolate toward target, add gentle oscillation when speaking
   useEffect(() => {
-    if (status === "listening") return;
-    if (excitementDecayRef.current) clearTimeout(excitementDecayRef.current);
-    setListeningExcitement(0);
-  }, [status]);
+    const tick = () => {
+      const now = Date.now();
+      const msSinceSpeech = now - lastTranscriptTimeRef.current;
+      const activelySpeaking = status === "listening" && msSinceSpeech < 500;
+      const floor = status === "listening" ? 0.3 : 0;
 
-  // 0–1 excitement: only active while listening (reacts to user's voice via transcript updates)
-  const excitement = status === "listening" ? listeningExcitement : 0;
+      // Base target: full when actively speaking, floor otherwise
+      const baseTarget = activelySpeaking ? 1.0 : floor;
+      // Gentle sine oscillation (~1.5 Hz) while speaking — adds rhythm without real amplitude data
+      const pulse = activelySpeaking ? Math.sin(now * 0.0094) * 0.1 : 0;
+      const target = Math.min(1, Math.max(0, baseTarget + pulse));
+
+      const prev = smoothedExcitementRef.current;
+      // Fast attack (0.4), slow decay (0.06) — same feel as original useMicLevel
+      const next = target > prev
+        ? prev + (target - prev) * 0.4
+        : prev + (target - prev) * 0.06;
+      smoothedExcitementRef.current = next;
+
+      if (Math.abs(next - prev) > 0.004) setExcitement(next);
+
+      excitementRafRef.current = requestAnimationFrame(tick);
+    };
+    excitementRafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (excitementRafRef.current) cancelAnimationFrame(excitementRafRef.current);
+    };
+  }, [status, speech.transcript]);
 
   // Reset translation when a new message arrives
   const resetTranslation = useCallback(() => {
