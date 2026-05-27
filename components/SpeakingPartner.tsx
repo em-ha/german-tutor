@@ -353,6 +353,8 @@ function SpeakingPartnerContent() {
     setLocalError(null);
 
     try {
+      // Request mic access explicitly — required on Android Chrome before WebRTC starts
+      await navigator.mediaDevices.getUserMedia({ audio: true });
       const token = await fetchTokenWithRetry();
       setSelectedLanguage(lang);
       setLastAssistantText("");
