@@ -12,7 +12,8 @@
  */
 
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
-import "dotenv/config";
+import { config } from "dotenv";
+config({ path: ".env.local" });
 
 const wsUrl = process.argv[2];
 if (!wsUrl) {

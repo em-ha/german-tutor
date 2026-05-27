@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Special_Gothic_Condensed_One } from "next/font/google";
+import { SdkNoiseSuppressor } from "@/components/SdkNoiseSuppressor";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -9,6 +10,12 @@ const geistSans = Geist({
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
+
+const specialGothic = Special_Gothic_Condensed_One({
+  variable: "--font-special-gothic",
+  weight: "400",
   subsets: ["latin"],
 });
 
@@ -25,13 +32,14 @@ export default function RootLayout({
   return (
     <html
       lang="de"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${specialGothic.variable} h-full antialiased`}
       suppressHydrationWarning
     >
       <body
         className="h-full font-sans"
         suppressHydrationWarning
       >
+        <SdkNoiseSuppressor />
         {children}
       </body>
     </html>

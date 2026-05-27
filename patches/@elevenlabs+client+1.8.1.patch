@@ -1,0 +1,17 @@
+diff --git a/node_modules/@elevenlabs/client/dist/BaseConversation.js b/node_modules/@elevenlabs/client/dist/BaseConversation.js
+index 9a10aa6..ffca115 100644
+--- a/node_modules/@elevenlabs/client/dist/BaseConversation.js
++++ b/node_modules/@elevenlabs/client/dist/BaseConversation.js
+@@ -255,6 +255,12 @@ export class BaseConversation {
+         }
+     }
+     handleErrorEvent(event) {
++        // Defensive: ElevenLabs can send an error event without an error_event payload
++        // (e.g. when the server receives an empty/silent response). Guard every access.
++        if (!event.error_event) {
++            console.warn("[ElevenLabs SDK] received error event with no error_event payload:", event);
++            return;
++        }
+         const errorType = event.error_event.error_type;
+         const message = event.error_event.message || event.error_event.reason || "Unknown error";
+         if (errorType === "max_duration_exceeded") {

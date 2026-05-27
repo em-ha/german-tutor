@@ -13,16 +13,80 @@ const EYE_OFFSETS = [
   { x: 2, y: 1.2 },
 ];
 
-const DOME_BODY_WIDTH = 887; // px — fixed body width; mobile viewport crops the centre
+const DOME_BODY_WIDTH = 900; // px — fixed body width; mobile viewport crops the centre
 
-// Exact vector exported from Figma node 11:437 ("quatschi" blob). viewBox 0 0 893.167 947.999
-const QUATSCHI_W = 893.167;
-const QUATSCHI_H = 947.999;
+// Exact vector from Figma node 31:762 ("Vector 1" — updated rounder pebble design). 900×945
+const QUATSCHI_W = 900.378;
+const QUATSCHI_H = 945.325;
 const QUATSCHI_PATH =
-  "M169.648 150.482C142.611 173.431 72.2545 196.999 45.6482 257.999C4.64817 351.999 32.0374 406.999 10.6482 487.999C-0.35219 529.656 1.28629 647.991 10.6482 686.999L10.8798 687.964C16.5146 711.459 29.0607 763.772 58.6481 804.999C84.8706 841.537 184.088 887.114 221.648 906.999C255.648 924.999 381.648 944.999 445.648 944.999C518.724 944.999 625.648 944.999 679.648 916.999C745.648 882.776 775.648 844.999 820.648 798.999C866.927 751.691 872.664 649.843 881.648 581.999C886.234 547.37 898.28 469.999 881.648 390.999C853.648 257.999 804.525 194.82 688.648 128.999C578.648 66.5153 482.664 -56.4413 315.764 36.6707C250.648 72.9985 216.774 110.48 169.648 150.482Z";
-// Face anchor in blob coordinate space (from Figma eye ellipses, under the peak)
-const FACE_BLOB_X = 420;
-const FACE_BLOB_Y = 80;
+  "M 13.833 683.999 C -13.805 568.840 2.185 363.998 42.185 279.998 C 82.185 195.998 128.185 179.998 172.833 147.482 C 217.481 114.966 253.833 69.999 318.949 33.671 C 485.849 -59.441 581.833 63.516 691.833 125.999 C 807.710 191.821 856.833 254.999 884.833 387.999 C 906.695 491.844 919.481 685.999 823.833 795.999 C 728.185 905.999 666.185 919.998 576.185 937.998 C 486.185 955.998 168.841 951.104 61.833 801.999 C 31.833 760.197 19.353 706.999 13.833 683.999 Z";
+
+// The 9 anchor points extracted from the Figma vectorNetwork (each segment endpoint).
+const BASE_DOME_POINTS: [number, number][] = [
+  [ 13.833, 683.999],  // 0: lower-left
+  [ 42.185, 279.998],  // 1: left-upper
+  [172.833, 147.482],  // 2: upper-left shoulder
+  [318.949,  33.671],  // 3: top peak
+  [691.833, 125.999],  // 4: upper-right
+  [884.833, 387.999],  // 5: right
+  [823.833, 795.999],  // 6: lower-right
+  [576.185, 937.998],  // 7: bottom-right
+  [ 61.833, 801.999],  // 8: bottom-left
+];
+
+// Cubic bezier control point offsets for each segment i → (i+1).
+// rcp1 is relative to the segment START point (tangentStart from Figma vectorNetwork).
+// rcp2 is relative to the segment END point (tangentEnd from Figma vectorNetwork).
+// Keeping these fixed while wobbling the anchor points preserves the Figma shape character.
+const DOME_CP_OFFSETS: [[number, number], [number, number]][] = [
+  [[-27.638, -115.159], [-40.000,  84.000]],  // 0→1
+  [[ 40.000,  -84.000], [-44.648,  32.516]],  // 1→2
+  [[ 44.648,  -32.516], [-65.116,  36.328]],  // 2→3
+  [[166.900,  -93.112], [-110.000, -62.483]], // 3→4
+  [[115.877,   65.822], [-28.000, -133.000]], // 4→5
+  [[ 21.862,  103.845], [ 95.648, -110.000]], // 5→6
+  [[-95.648,  110.000], [ 90.000,  -18.000]], // 6→7
+  [[-90.000,   18.000], [107.008,  149.105]], // 7→8
+  [[-30.000,  -41.802], [  5.520,   23.000]], // 8→0
+];
+
+// Approximate centroid of the blob (used for radial wobble direction)
+const BLOB_CX = 450;
+const BLOB_CY = 490;
+
+/** Generates a liquid-morphing version of the dome blob each frame.
+ *  Anchor points are nudged radially (in/out from centroid) with overlapping sine waves.
+ *  Cubic bezier control point offsets stay fixed relative to each anchor point,
+ *  so the Figma shape character is fully preserved — only the edges ripple. */
+function makeLiquidDomePath(t: number): string {
+  const n = BASE_DOME_POINTS.length;
+
+  const animPts: [number, number][] = BASE_DOME_POINTS.map(([x, y], i) => {
+    const phase = (i / n) * Math.PI * 2;
+    const wobble =
+      Math.sin(phase * 2 + t * 0.5) * 5 +
+      Math.sin(phase * 3 + t * 0.75) * 3;
+    const dx = x - BLOB_CX;
+    const dy = y - BLOB_CY;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    return [x + (dx / len) * wobble, y + (dy / len) * wobble];
+  });
+
+  const f = (v: number) => v.toFixed(1);
+  let d = `M ${f(animPts[0][0])} ${f(animPts[0][1])}`;
+  for (let i = 0; i < n; i++) {
+    const pt = animPts[i];
+    const e = animPts[(i + 1) % n];
+    const [[r1x, r1y], [r2x, r2y]] = DOME_CP_OFFSETS[i];
+    d += ` C ${f(pt[0]+r1x)} ${f(pt[1]+r1y)} ${f(e[0]+r2x)} ${f(e[1]+r2y)} ${f(e[0])} ${f(e[1])}`;
+  }
+  d += " Z";
+  return d;
+}
+
+// Face anchor in blob coordinate space (derived from Figma node 31:761 face position)
+const FACE_BLOB_X = 415;
+const FACE_BLOB_Y = 62;
 
 export type Emotion =
   | "happy"
@@ -31,7 +95,8 @@ export type Emotion =
   | "embarrassed"
   | "excited"
   | "surprised"
-  | "thinking";
+  | "thinking"
+  | "asleep";
 
 type EmotionConfig = {
   color: string;
@@ -47,71 +112,86 @@ type EmotionConfig = {
   browRight: string;
   /** Cheek blush circles */
   cheeks: boolean;
+  /** Render closed-eye arc paths instead of ellipses (asleep) */
+  closedEyes?: boolean;
 };
 
 const EMOTIONS: Record<Emotion, EmotionConfig> = {
+  // Brow/mouth paths re-derived from Figma node 31:761.
+  // Eye positions: left (23,18), right (48,14) — right eye is higher.
+  // All paths in SVG face-coordinate space (faceScale ≈ 2.4, origin at face center).
   happy: {
-    color: "#f472b6",
+    color: "#fd92ca",
     eyeScale: 1,
-    eyeRadius: 3.0,
-    idleMouth: "M 28 32 Q 40 43 52 32",
-    browLeft:  "M 23 7 Q 28 4 33 6",
-    browRight: "M 47 7 Q 52 4 57 6",
+    eyeRadius: 2.8,
+    idleMouth: "M 24 37 C 43 49 51 34 52 33",
+    browLeft:  "M 14 10 C 15 8 18 5 26 6",
+    browRight: "M 41 4 C 43 3 47 0 54 2",
     cheeks: false,
   },
   sad: {
     color: "#818cf8",
     eyeScale: 0.85,
-    eyeRadius: 3.0,
-    idleMouth: "M 28 36 Q 40 28 52 36",
-    browLeft:  "M 23 6 Q 28 9 33 7",
-    browRight: "M 47 6 Q 52 9 57 7",
+    eyeRadius: 2.8,
+    idleMouth: "M 29 40 C 35 34 52 34 58 40",  // frown — bows up in middle
+    browLeft:  "M 12 17 C 15 14 17 14 21 13",  // inner-low sad brow
+    browRight: "M 46 9 C 50 9 55 10 58 12",    // slightly rising
     cheeks: false,
   },
   angry: {
     color: "#f87171",
     eyeScale: 0.75,
-    eyeRadius: 2.8,
-    idleMouth: "M 29 35 Q 40 31 51 35",
-    browLeft:  "M 23 8 Q 28 4 33 7",
-    browRight: "M 47 7 Q 52 4 57 8",
+    eyeRadius: 2.6,
+    idleMouth: "M 23 36 C 28 30 46 30 52 36",  // frown
+    browLeft:  "M 19 12 C 23 14 26 15 30 16",  // descends left→right (furrowed)
+    browRight: "M 42 14 C 44 13 52 9 55 6",    // rises left→right (V-furrowed)
     cheeks: false,
   },
   embarrassed: {
-    color: "#fb7185",
-    eyeScale: 0.8,
-    eyeRadius: 3.0,
-    idleMouth: "M 30 33 Q 40 38 50 33",
-    browLeft:  "M 23 7 Q 28 5 33 7",
-    browRight: "M 47 7 Q 52 5 57 7",
+    color: "#fe66b6",
+    eyeScale: 0.9,
+    eyeRadius: 3.6,                             // bigger eyes
+    idleMouth: "M 29 42 C 34 42 41 41 46 39",  // subtle downward-left curve
+    browLeft:  "M 10 15 C 12 12 17 8 21 8",
+    browRight: "M 46 6 C 50 6 55 7 58 10",
     cheeks: true,
   },
   excited: {
-    color: "#fbbf24",
+    color: "#ffcd83",
     eyeScale: 1.1,
-    eyeRadius: 3.5,
-    idleMouth: "M 27 31 Q 40 45 53 31",
-    browLeft:  "M 23 5 Q 28 1 33 4",
-    browRight: "M 47 5 Q 52 1 57 4",
+    eyeRadius: 3.2,
+    idleMouth: "M 23 33 Q 36 47 49 33",
+    browLeft:  "M 18 9 Q 23 5 28 8",
+    browRight: "M 43 5 Q 48 1 53 4",
     cheeks: false,
   },
   surprised: {
     color: "#fb923c",
     eyeScale: 1.15,
-    eyeRadius: 3.7,
-    idleMouth: "M 33 32 Q 40 42 47 32",
-    browLeft:  "M 23 4 Q 28 0 33 3",
-    browRight: "M 47 4 Q 52 0 57 3",
+    eyeRadius: 3.4,
+    idleMouth: "M 29 34 Q 36 44 43 34",
+    browLeft:  "M 18 8 Q 23 4 28 7",
+    browRight: "M 43 4 Q 48 0 53 3",
     cheeks: false,
   },
   thinking: {
     color: "#c084fc",
     eyeScale: 0.9,
-    eyeRadius: 3.0,
-    idleMouth: "M 30 33 Q 38 37 48 31",
-    browLeft:  "M 23 7 Q 28 4 33 6",
-    browRight: "M 47 5 Q 52 7 57 5",
+    eyeRadius: 2.8,
+    idleMouth: "M 26 35 Q 34 39 44 33",
+    browLeft:  "M 18 11 Q 23 8 28 10",
+    browRight: "M 43 5 Q 48 7 53 5",
     cheeks: false,
+  },
+  asleep: {
+    color: "#94a3b8",
+    eyeScale: 1,
+    eyeRadius: 2.8,
+    idleMouth: "M 30 36 Q 38 40 46 36",
+    browLeft:  "M 14 12 C 17 10 20 9 24 9",
+    browRight: "M 45 9 C 48 9 51 10 54 11",
+    cheeks: false,
+    closedEyes: true,
   },
 };
 
@@ -165,6 +245,7 @@ export function CharacterAvatar({
   const [eyeOffset, setEyeOffset] = useState({ x: 0, y: 0 });
   const [float, setFloat] = useState({ x: 0, y: 0, rotate: 0 });
   const [blob, setBlob] = useState("");
+  const [domeBlob, setDomeBlob] = useState(QUATSCHI_PATH);
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
   const containerSizeRef = useRef({ w: 0, h: 0 });
@@ -196,11 +277,12 @@ export function CharacterAvatar({
     const animate = () => {
       const t = (Date.now() - startRef.current) / 1000;
       setFloat({
-        x: Math.sin(t * 0.63) * 14,
-        y: Math.sin(t * 1.1) * 18,
-        rotate: Math.sin(t * 0.45) * 4,
+        x: Math.sin(t * 0.63) * 8,
+        y: Math.sin(t * 1.1) * 10,
+        rotate: Math.sin(t * 0.45) * 2.5,
       });
       setBlob(makeBlob(40, 40, 55, t));
+      setDomeBlob(makeLiquidDomePath(t));
       rafRef.current = requestAnimationFrame(animate);
     };
     rafRef.current = requestAnimationFrame(animate);
@@ -252,11 +334,11 @@ export function CharacterAvatar({
   // ── Shared face JSX (used by both variants) ─────────────────────────────────
   const faceElements = (
     <>
-      {/* Cheek blushes (embarrassed) */}
+      {/* Cheek blushes (embarrassed) — small dots below each eye */}
       {cfg.cheeks && (
         <>
-          <circle cx="18" cy="26" r="7" fill="#fda4af" opacity="0.55" />
-          <circle cx="62" cy="26" r="7" fill="#fda4af" opacity="0.55" />
+          <circle cx="15" cy="32" r="5" fill="white" opacity="0.5" />
+          <circle cx="58" cy="28" r="5" fill="white" opacity="0.5" />
         </>
       )}
 
@@ -264,52 +346,83 @@ export function CharacterAvatar({
       <g style={{ transform: `translateY(${-6 * excitement}px)`, transition: "transform 0.15s ease-out" }}>
         <path
           d={cfg.browLeft}
-          stroke="#1a1a1a"
-          strokeWidth="1.6"
+          stroke="#161d2f"
+          strokeWidth="4"
           fill="none"
           strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
           style={{ transition: "d 0.4s ease" }}
         />
         <path
           d={cfg.browRight}
-          stroke="#1a1a1a"
-          strokeWidth="1.6"
+          stroke="#161d2f"
+          strokeWidth="4"
           fill="none"
           strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
           style={{ transition: "d 0.4s ease" }}
         />
       </g>
 
-      {/* Left eye */}
-      <g style={{ transform: `translate(${eyeOffset.x}px, ${eyeOffset.y}px)`, transition: "transform 0.38s ease-out" }}>
-        <g className="char-eye-inner" style={{ transform: `scaleY(${eyeScaleY})`, transition: blinkTransition }}>
-          <circle cx="28" cy="14" r={cfg.eyeRadius} fill="#1a1a1a" />
-          <circle cx="29" cy="12.8" r="1.0" fill="white" />
-        </g>
-      </g>
+      {cfg.closedEyes ? (
+        <>
+          {/* Closed eyes — matching arc paths for asleep, symmetric around face centre */}
+          <path d="M 18 18 C 20 15 23 15 26 17" stroke="#161d2f" strokeWidth="4"
+                fill="none" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+          <path d="M 43 18 C 45 15 48 15 51 17" stroke="#161d2f" strokeWidth="4"
+                fill="none" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+          {/* Floating zzZ bubbles rising from mouth */}
+          {(["z", "z", "Z"] as const).map((letter, i) => (
+            <text
+              key={i}
+              x={50 + i * 5}
+              y={34 - i * 5}
+              fontSize={5 + i * 1.5}
+              fontFamily="Arial, sans-serif"
+              fontWeight="bold"
+              fill="#161d2f"
+              style={{
+                animation: `floatZed 1.8s ease-in-out ${i * 0.6}s infinite`,
+                transformOrigin: `${50 + i * 5}px ${34 - i * 5}px`,
+              }}
+            >
+              {letter}
+            </text>
+          ))}
+        </>
+      ) : (
+        <>
+          {/* Left eye — ellipse, slight counter-clockwise tilt */}
+          <g style={{ transform: `translate(${eyeOffset.x}px, ${eyeOffset.y}px)`, transition: "transform 0.38s ease-out" }}>
+            <g className="char-eye-inner" style={{ transform: `scaleY(${eyeScaleY})`, transition: blinkTransition }}>
+              <ellipse cx="23" cy="18" rx={cfg.eyeRadius * 1.4} ry={cfg.eyeRadius} fill="#161d2f" transform="rotate(-10, 23, 18)" />
+            </g>
+          </g>
 
-      {/* Right eye */}
-      <g style={{ transform: `translate(${eyeOffset.x}px, ${eyeOffset.y}px)`, transition: "transform 0.38s ease-out" }}>
-        <g className="char-eye-inner" style={{ transform: `scaleY(${eyeScaleY})`, transition: blinkTransition }}>
-          <circle cx="52" cy="14" r={cfg.eyeRadius} fill="#1a1a1a" />
-          <circle cx="53" cy="12.8" r="1.0" fill="white" />
-        </g>
-      </g>
+          {/* Right eye — ellipse, slight counter-clockwise tilt */}
+          <g style={{ transform: `translate(${eyeOffset.x}px, ${eyeOffset.y}px)`, transition: "transform 0.38s ease-out" }}>
+            <g className="char-eye-inner" style={{ transform: `scaleY(${eyeScaleY})`, transition: blinkTransition }}>
+              <ellipse cx="48" cy="14" rx={cfg.eyeRadius * 1.4} ry={cfg.eyeRadius} fill="#161d2f" transform="rotate(-8, 48, 14)" />
+            </g>
+          </g>
+        </>
+      )}
 
-      {/* Mouth — smile grows with excitement (pivot around mouth centre) */}
+      {/* Mouth — asymmetric smile grows with excitement (pivot around mouth centre) */}
       {mouthOpen ? (
-        <ellipse cx="40" cy="34" rx="11" ry={mouthRy} fill="#1a1a1a" />
+        <ellipse cx="38" cy="36" rx="10" ry={mouthRy} fill="#161d2f" />
       ) : (
         <g style={{
-          transform: `translate(40px,32px) scale(${1 + 0.35 * excitement},${1 + 0.8 * excitement}) translate(-40px,-32px)`,
+          transform: `translate(38px,36px) scale(${1 + 0.35 * excitement},${1 + 0.8 * excitement}) translate(-38px,-36px)`,
           transition: "transform 0.15s ease-out",
         }}>
           <path
             d={cfg.idleMouth}
-            stroke="#1a1a1a"
-            strokeWidth="2.5"
+            stroke="#161d2f"
+            strokeWidth="4"
             fill="none"
             strokeLinecap="round"
+            vectorEffect="non-scaling-stroke"
             style={{ transition: "d 0.4s ease" }}
           />
         </g>
@@ -350,10 +463,25 @@ export function CharacterAvatar({
             <defs>
               {/* Yellow excitement gradient — radial, centred on the head, fades to transparent by mid-body */}
               <radialGradient id="excite-grad" gradientUnits="userSpaceOnUse"
-                cx={FACE_BLOB_X} cy="130" r="480">
-                <stop offset="0%"   stopColor="#FFD43B" stopOpacity="1" />
-                <stop offset="45%"  stopColor="#FFA24C" stopOpacity="0.78" />
-                <stop offset="100%" stopColor="#f472b6" stopOpacity="0" />
+                cx={FACE_BLOB_X} cy="45" r="480">
+                <stop offset="0%"   stopColor="#FFCD83" stopOpacity="1" />
+                <stop offset="45%"  stopColor="#FFCD83" stopOpacity="0.78" />
+                <stop offset="100%" stopColor="#fd92ca" stopOpacity="0" />
+              </radialGradient>
+              {/* 3D highlight — upper-right light source */}
+              <radialGradient id="highlight-grad" gradientUnits="objectBoundingBox"
+                cx="0.68" cy="0.18" r="0.52">
+                <stop offset="0%"   stopColor="white" stopOpacity="0.38" />
+                <stop offset="35%"  stopColor="white" stopOpacity="0.12" />
+                <stop offset="70%"  stopColor="white" stopOpacity="0.03" />
+                <stop offset="100%" stopColor="white" stopOpacity="0" />
+              </radialGradient>
+              {/* 3D shadow — bottom/lower-left darkening, opposite the light source */}
+              <radialGradient id="shadow-grad" gradientUnits="objectBoundingBox"
+                cx="0.35" cy="0.92" r="0.72">
+                <stop offset="0%"   stopColor="black" stopOpacity="0.28" />
+                <stop offset="45%"  stopColor="black" stopOpacity="0.12" />
+                <stop offset="100%" stopColor="black" stopOpacity="0" />
               </radialGradient>
             </defs>
 
@@ -362,18 +490,19 @@ export function CharacterAvatar({
               transform: `translate(${float.x}px, ${float.y}px) rotate(${float.rotate}deg)`,
               transformOrigin: `${w / 2}px ${h * 0.4}px`,
             }}>
-              {/* Blob: exact Figma path scaled into pixel space */}
+              {/* Blob: liquid-morphing path updated every frame in the RAF loop */}
               <g transform={`translate(0 ${topMargin}) scale(${s})`}>
-                {/* Backfill rect so the bottom is always pink on tall viewports
-                    (blob narrows at the bottom; this fills from y=620 downward) */}
-                <rect x={0} y={620} width={QUATSCHI_W} height={QUATSCHI_H * 2} fill="#f472b6" />
-                <path d={QUATSCHI_PATH} fill="#f472b6" />
+                <path d={domeBlob} fill="#fd92ca" />
+                {/* 3D shadow — darkens bottom/lower-left to give depth */}
+                <path d={domeBlob} fill="url(#shadow-grad)" />
                 {/* Yellow overlay: opacity scales with audio level (0 = hidden, 1 = full Figma yellow) */}
                 <path
-                  d={QUATSCHI_PATH}
+                  d={domeBlob}
                   fill="url(#excite-grad)"
                   style={{ opacity: excitement, transition: "opacity 0.15s linear" }}
                 />
+                {/* 3D highlight on top — soft white sheen in upper-right, always visible */}
+                <path d={domeBlob} fill="url(#highlight-grad)" />
               </g>
 
               {/* Face — glued to the head, rides the float */}
@@ -400,7 +529,7 @@ export function CharacterAvatar({
         {blob && (
           <path
             d={blob}
-            fill="#f472b6"
+            fill="#fd92ca"
           />
         )}
 

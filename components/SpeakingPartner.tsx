@@ -1,18 +1,62 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Component, useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
-import { OPENING_LINE } from "@/lib/prompts";
+import { LANGUAGES, getPickerHeading, type Language } from "@/lib/languages";
 import { useMouthAnimation } from "@/lib/useMouthAnimation";
 import type { Emotion } from "./CharacterAvatar";
 import { CharacterAvatar } from "./CharacterAvatar";
 import { MicControl } from "./MicControl";
 import { TranscriptDisplay, type PartnerStatus } from "./TranscriptDisplay";
 
+// ── Error boundary — catches SDK crashes (e.g. malformed ElevenLabs error events) ──
+class SdkErrorBoundary extends Component<{ children: ReactNode }, { crashed: boolean }> {
+  state = { crashed: false };
+  static getDerivedStateFromError() { return { crashed: true }; }
+  componentDidCatch(err: unknown) {
+    console.error("[SpeakingPartner] SDK error caught by boundary:", err);
+  }
+  render() {
+    if (this.state.crashed) {
+      return (
+        <div className="relative h-dvh overflow-hidden bg-[#161d2f] flex items-center justify-center">
+          <div className="flex flex-col items-center gap-4 px-6 text-center">
+            <p className="text-white/70 text-sm">Something went wrong. Please refresh to continue.</p>
+            <button
+              type="button"
+              className="rounded-xl bg-white/10 px-5 py-2.5 text-sm text-white hover:bg-white/20"
+              onClick={() => { this.setState({ crashed: false }); window.location.reload(); }}
+            >
+              Refresh
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ── Inner component (must be inside ConversationProvider) ────────────────────
 function SpeakingPartnerContent() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [lastAssistantText, setLastAssistantText] = useState("");
+
+  // Language selection
+  const [selectedLanguage, setSelectedLanguage] = useState<Language | null>(null);
+  const [pickerHeading, setPickerHeading] = useState(
+    "Which language do you want to practice today?"
+  );
+  useEffect(() => {
+    setPickerHeading(getPickerHeading());
+  }, []);
+
+  // Mode selection
+  const [mode, setMode] = useState<"conversation" | "shadowing">("conversation");
+
+  // Ref used to restart the session in a new mode after endSession() resolves
+  const pendingModeRestartRef = useRef<{ lang: Language; newMode: "conversation" | "shadowing" } | null>(null);
 
   // Translate feature
   const [translation, setTranslation] = useState<string | null>(null);
@@ -22,17 +66,80 @@ function SpeakingPartnerContent() {
   // Copy feature
   const [copied, setCopied] = useState(false);
 
+  // Sleep feature
+  const SLEEP_AFTER_MS = 45_000;
+  const [isAsleep, setIsAsleep] = useState(false);
+  const sleepTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Set to true when the user deliberately ends the session (X button / language switch).
+  // onDisconnect uses this to distinguish user-initiated ends from ElevenLabs timeouts.
+  const userEndedSessionRef = useRef(false);
+  // True while a startSession call is in-flight (before onConnect fires).
+  // Prevents onDisconnect from triggering sleep when a NEW session fails to start.
+  const isStartingSessionRef = useRef(false);
+  // True only when our own 45s timer fires — so onDisconnect knows sleep was intentional.
+  const sleepInitiatedRef = useRef(false);
+  // Counts auto-reconnect attempts after an unexpected ElevenLabs drop; resets on successful connect.
+  const reconnectAttemptsRef = useRef(0);
+
   const { mouthOpenness, onBoundary, reset: resetMouth } = useMouthAnimation();
 
+  // ── Sleep timer helpers ─────────────────────────────────────────────────────
+  const clearSleepTimer = useCallback(() => {
+    if (sleepTimerRef.current) { clearTimeout(sleepTimerRef.current); sleepTimerRef.current = null; }
+  }, []);
+
   // ── ElevenLabs Speech Engine conversation ───────────────────────────────────
+  // scheduleSleep is defined after conversation to avoid forward-ref; we use a ref for the callback.
+  const scheduleSleepRef = useRef<() => void>(() => {});
+  // Ref to selectedLanguage so onDisconnect can read current value without stale closure.
+  const selectedLanguageRef = useRef<Language | null>(null);
+  useEffect(() => { selectedLanguageRef.current = selectedLanguage; }, [selectedLanguage]);
+
   const conversation = useConversation({
     onConnect: () => {
       setLocalError(null);
+      setIsAsleep(false);
+      userEndedSessionRef.current = false;
+      isStartingSessionRef.current = false;
+      sleepInitiatedRef.current = false;
+      reconnectAttemptsRef.current = 0;
+      scheduleSleepRef.current();
     },
     onDisconnect: () => {
+      const wasStarting = isStartingSessionRef.current;
+      isStartingSessionRef.current = false;
+      clearSleepTimer();
       resetMouth();
       setExcitement(0);
       smoothedExcitementRef.current = 0;
+
+      // If the session never fully connected (wasStarting=true), it was a failed
+      // connection attempt — go back to the language picker, not sleep.
+      if (wasStarting) {
+        setSelectedLanguage(null);
+        return;
+      }
+
+      // Our 45s timer fired and ended the session — confirm sleep state.
+      if (sleepInitiatedRef.current) {
+        sleepInitiatedRef.current = false;
+        setIsAsleep(true); // already set by timer, but idempotent
+        return;
+      }
+
+      // Unexpected ElevenLabs disconnect during an active session (network glitch, their VAD timeout, etc.)
+      // → auto-reconnect up to 2 times before giving up and going to the language picker.
+      if (!userEndedSessionRef.current && selectedLanguageRef.current && !pendingModeRestartRef.current) {
+        const lang = selectedLanguageRef.current;
+        if (reconnectAttemptsRef.current < 2) {
+          reconnectAttemptsRef.current += 1;
+          setTimeout(() => { void reconnectRef.current(lang); }, 1000);
+        } else {
+          reconnectAttemptsRef.current = 0;
+          setSelectedLanguage(null);
+        }
+        return;
+      }
     },
     onError: (message) => {
       setLocalError(typeof message === "string" ? message : "Connection error");
@@ -43,17 +150,31 @@ function SpeakingPartnerContent() {
         setLastAssistantText(message);
         resetTranslation();
       }
+      // Reset inactivity timer on every user turn
+      if (source === "user") scheduleSleepRef.current();
     },
     onModeChange: ({ mode }) => {
+      resetMouth();
       if (mode === "speaking") {
-        resetMouth();
         resetTranslation();
-        setLastAssistantText(""); // will be set by onMessage as it streams in
-      } else {
-        resetMouth();
       }
+      // Agent finished speaking — user's turn begins, restart the inactivity clock
+      if (mode === "listening") scheduleSleepRef.current();
     },
   });
+
+  // ── Define scheduleSleep now that conversation is available ─────────────────
+  const scheduleSleep = useCallback(() => {
+    clearSleepTimer();
+    sleepTimerRef.current = setTimeout(() => {
+      setIsAsleep(true);
+      sleepInitiatedRef.current = true; // tell onDisconnect this was intentional
+      void conversation.endSession();
+    }, SLEEP_AFTER_MS);
+  }, [clearSleepTimer, conversation]);
+
+  // Keep the ref in sync so the callbacks above always call the latest version
+  useEffect(() => { scheduleSleepRef.current = scheduleSleep; }, [scheduleSleep]);
 
   // Derive a PartnerStatus from the ElevenLabs conversation state
   const status: PartnerStatus =
@@ -64,8 +185,6 @@ function SpeakingPartnerContent() {
       : conversation.mode === "speaking"
       ? "speaking"
       : "listening";
-
-  const isActive = lastAssistantText.length > 0 || status !== "idle";
 
   // ── Mouth animation while agent is speaking ─────────────────────────────────
   // Simulate word boundaries at speech rhythm since ElevenLabs Speech Engine
@@ -108,9 +227,9 @@ function SpeakingPartnerContent() {
 
       // Base at midpoint when voice detected so oscillation gives visible 0.3–0.7 range
       const isSpeaking = inputVol > 0.05;
-      const baseTarget = isSpeaking ? 0.5 : floor;
-      const pulse = isSpeaking ? Math.sin(Date.now() * 0.019) * 0.2 : 0;
-      const target = Math.min(0.7, Math.max(0, baseTarget + pulse));
+      const baseTarget = isSpeaking ? 0.6 : floor;
+      const pulse = isSpeaking ? Math.sin(Date.now() * 0.019) * 0.3 : 0;
+      const target = Math.min(0.9, Math.max(0, baseTarget + pulse));
 
       const prev = smoothedExcitementRef.current;
       // Fast attack (0.4), slow decay (0.06)
@@ -128,7 +247,9 @@ function SpeakingPartnerContent() {
   }, [status, conversation]);
 
   // ── Derive emotion ──────────────────────────────────────────────────────────
-  const emotion: Emotion = localError
+  const emotion: Emotion = isAsleep
+    ? "asleep"
+    : localError
     ? "embarrassed"
     : status === "thinking"
     ? "thinking"
@@ -140,34 +261,125 @@ function SpeakingPartnerContent() {
     setShowTranslation(false);
   }, []);
 
+  // ── Pre-fetch token on mount so mic press is instant ───────────────────────
+  // Returns true if the JWT still has at least 60 seconds before expiry.
+  const isTokenFresh = (token: string): boolean => {
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1])) as { exp: number };
+      return payload.exp * 1000 > Date.now() + 60_000;
+    } catch {
+      return false;
+    }
+  };
+
+  const prefetchedTokenRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prefetch = async () => {
+      try {
+        const res = await fetch("/api/token");
+        if (res.ok) {
+          const { token } = (await res.json()) as { token: string };
+          prefetchedTokenRef.current = token;
+        }
+      } catch {
+        // Silently ignore — we'll fetch on demand if this fails
+      }
+    };
+    void prefetch();
+  }, []);
+
+  // ── Token fetch with retry ─────────────────────────────────────────────────
+  // ElevenLabs returns 500 for ~2s after a session ends. Retry with backoff.
+  const fetchTokenWithRetry = useCallback(async (): Promise<string> => {
+    const cached = prefetchedTokenRef.current;
+    prefetchedTokenRef.current = null;
+    if (cached && isTokenFresh(cached)) return cached;
+
+    const delays = [0, 1500, 3000, 5000];
+    for (const delay of delays) {
+      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+      const res = await fetch("/api/token");
+      if (res.ok) {
+        const { token } = (await res.json()) as { token: string };
+        return token;
+      }
+      console.warn(`[Token] attempt failed (delay=${delay}ms) status=${res.status}`);
+    }
+    throw new Error("Could not get a session token — please try again.");
+  }, []);
+
   // ── Mic press ───────────────────────────────────────────────────────────────
   const handleMicPress = useCallback(async () => {
     setLocalError(null);
 
     if (conversation.status === "connected" || conversation.status === "connecting") {
+      userEndedSessionRef.current = true;
       void conversation.endSession();
       return;
     }
 
     try {
-      const res = await fetch("/api/token");
-      if (!res.ok) throw new Error(`Token error ${res.status}`);
-      const { token } = (await res.json()) as { token: string };
+      const token = await fetchTokenWithRetry();
 
       setLastAssistantText("");
       resetTranslation();
 
+      const lang = selectedLanguage ?? LANGUAGES[1]; // default to German if somehow called without selection
+      const openingLine = mode === "shadowing" ? lang.shadowingOpeningLine : lang.openingLine;
+      isStartingSessionRef.current = true;
       conversation.startSession({
         conversationToken: token,
-        overrides: {
-          agent: { firstMessage: OPENING_LINE },
-        },
+        overrides: { agent: { firstMessage: openingLine } },
       });
+
+      // Pre-fetch the next token in the background for subsequent sessions
+      fetch("/api/token")
+        .then((r) => r.ok ? r.json() : null)
+        .then((data: { token: string } | null) => {
+          if (data?.token) prefetchedTokenRef.current = data.token;
+        })
+        .catch(() => {});
     } catch (err) {
       console.error("[SpeakingPartner] Connection error:", err);
       setLocalError("Could not connect — please try again.");
     }
-  }, [conversation, resetTranslation]);
+  }, [conversation, resetTranslation, mode, fetchTokenWithRetry]);
+
+  // ── Reconnect ref — allows onDisconnect (stale closure) to call the latest handleLanguageSelect ──
+  const reconnectRef = useRef<(lang: Language) => Promise<void>>(async () => {});
+
+  // ── Language select (auto-starts session) ──────────────────────────────────
+  const handleLanguageSelect = useCallback(async (lang: Language) => {
+    setLocalError(null);
+
+    try {
+      const token = await fetchTokenWithRetry();
+      setSelectedLanguage(lang);
+      setLastAssistantText("");
+      resetTranslation();
+      const openingLine = mode === "shadowing" ? lang.shadowingOpeningLine : lang.openingLine;
+      isStartingSessionRef.current = true;
+      conversation.startSession({
+        conversationToken: token,
+        overrides: { agent: { firstMessage: openingLine } },
+      });
+      // Pre-fetch next token in the background
+      fetch("/api/token")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data: { token: string } | null) => {
+          if (data?.token) prefetchedTokenRef.current = data.token;
+        })
+        .catch(() => {});
+    } catch (err) {
+      console.error("[SpeakingPartner] Language select error:", err);
+      setSelectedLanguage(null);
+      setLocalError("Could not connect — please try again.");
+    } finally {
+    }
+  }, [conversation, resetTranslation, mode, fetchTokenWithRetry]);
+
+  // Keep reconnectRef pointing to the latest handleLanguageSelect
+  useEffect(() => { reconnectRef.current = handleLanguageSelect; }, [handleLanguageSelect]);
 
   // ── Translate ───────────────────────────────────────────────────────────────
   const handleTranslate = useCallback(async () => {
@@ -185,7 +397,7 @@ function SpeakingPartnerContent() {
       const res = await fetch("/api/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: lastAssistantText }),
+        body: JSON.stringify({ text: lastAssistantText, sourceLang: selectedLanguage?.code ?? "de" }),
       });
       if (!res.ok) throw new Error(`Translate API error ${res.status}`);
       const data = (await res.json()) as { translation?: string };
@@ -210,106 +422,211 @@ function SpeakingPartnerContent() {
   }, [lastAssistantText]);
 
   // ── Replay ──────────────────────────────────────────────────────────────────
+  // sendUserMessage is not supported by ElevenLabs Speech Engine — replay is a no-op for now.
   const handleReplay = useCallback(() => {
-    if (!lastAssistantText || status === "speaking") return;
-    // Ask the agent to repeat (it will re-speak via ElevenLabs TTS)
-    conversation.sendUserMessage("Kannst du das bitte wiederholen?");
-  }, [lastAssistantText, status, conversation]);
+    void lastAssistantText;
+    void status;
+  }, [lastAssistantText, status]);
+
+  // ── Handle session disconnect — mode switch restart OR reveal screen ─────────
+  useEffect(() => {
+    if (conversation.status !== "disconnected") return;
+
+    // Mode switch: restart in the new mode immediately
+    const pendingMode = pendingModeRestartRef.current;
+    if (pendingMode) {
+      pendingModeRestartRef.current = null;
+      void (async () => {
+        try {
+          let token = prefetchedTokenRef.current && isTokenFresh(prefetchedTokenRef.current)
+            ? prefetchedTokenRef.current : null;
+          prefetchedTokenRef.current = null;
+          if (!token) {
+            const res = await fetch("/api/token");
+            if (!res.ok) throw new Error(`Token error ${res.status}`);
+            ({ token } = (await res.json()) as { token: string });
+          }
+          setLastAssistantText("");
+          resetTranslation();
+          const openingLine = pendingMode.newMode === "shadowing"
+            ? pendingMode.lang.shadowingOpeningLine
+            : pendingMode.lang.openingLine;
+          isStartingSessionRef.current = true;
+          conversation.startSession({
+            conversationToken: token,
+            overrides: { agent: { firstMessage: openingLine } },
+          });
+        } catch (err) {
+          console.error("[Mode switch restart]", err);
+          setLocalError("Could not switch mode — please try again.");
+        }
+      })();
+      return;
+    }
+  }, [conversation.status, conversation, resetTranslation]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
-  const displayError = localError;
 
   return (
-    <div
-      className={`relative h-dvh overflow-hidden ${
-        isActive ? "bg-zinc-900" : "bg-white dark:bg-zinc-950"
-      }`}
-    >
-      {/* Fullscreen dome blob — behind all UI */}
-      {isActive && (
-        <CharacterAvatar
-          variant="dome"
-          mouthOpenness={mouthOpenness}
-          emotion={emotion}
-          excitement={excitement}
-        />
-      )}
+    <div className="relative h-dvh overflow-hidden bg-[#161d2f]">
+      {/* Fullscreen dome blob — always behind all UI */}
+      <CharacterAvatar
+        variant="dome"
+        mouthOpenness={mouthOpenness}
+        emotion={emotion}
+        excitement={excitement}
+      />
 
-      {/* All UI — on top of blob */}
-      <div className="relative z-10 flex h-dvh flex-col">
-        {/* Top bar */}
-        <header className="shrink-0 flex items-center justify-end px-4 py-3 sm:px-6">
-          <button
-            type="button"
-            className={`rounded-lg border px-3 py-1.5 text-sm ${
-              isActive
-                ? "border-white/20 text-white/70 hover:bg-white/10"
-                : "border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-900"
-            }`}
-            aria-label="Send feedback"
-          >
-            Feedback
-          </button>
-        </header>
-
-        {/* Error banner */}
-        {displayError && (
-          <div
-            role="alert"
-            className="mx-4 mb-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/50 dark:text-amber-200 sm:mx-6"
-          >
-            {displayError}
-            <button
-              type="button"
-              className="ml-2 underline"
-              onClick={() => setLocalError(null)}
-            >
-              OK
-            </button>
+      {isAsleep ? (
+        // ── Sleeping UI ───────────────────────────────────────────────────────
+        <div className="relative z-10 flex h-dvh flex-col">
+          <div className="flex-1 flex items-end justify-center pb-4">
+            <p className="text-white/40 text-sm tracking-wide animate-pulse">Tap to wake up</p>
           </div>
-        )}
+          <MicControl
+            status={status}
+            micSupported={true}
+            onMicPress={() => {
+              // Wake up and go to language picker for a clean restart
+              setIsAsleep(false);
+              setSelectedLanguage(null);
+            }}
+            mode={mode}
+            onModeToggle={() => {
+              // Wake up, switch mode, go to picker
+              setIsAsleep(false);
+              setSelectedLanguage(null);
+              const newMode = mode === "conversation" ? "shadowing" : "conversation";
+              setMode(newMode);
+            }}
+            onClose={() => {
+              // X also goes to language picker
+              setIsAsleep(false);
+              setSelectedLanguage(null);
+            }}
+          />
+        </div>
+      ) : !selectedLanguage ? (
+        // ── Language picker ────────────────────────────────────────────────────
+        <div className="relative z-10 flex h-dvh flex-col items-center justify-center gap-4 px-6">
+          {localError && (
+            <div role="alert" className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              {localError}
+              <button type="button" className="ml-2 underline" onClick={() => setLocalError(null)}>
+                OK
+              </button>
+            </div>
+          )}
+          <p className="max-w-[329px] text-center text-[32px] leading-snug text-[#161d2f] font-[family-name:var(--font-special-gothic)] md:max-w-[516px]">{pickerHeading}</p>
 
-        {/* Main area: character + text + action bar */}
-        <TranscriptDisplay
-          text={lastAssistantText}
-          status={status}
-          isStreaming={false}
-          onPronounceWord={(word) => {
-            // Re-use the conversation to ask for pronunciation? Or just skip.
-            void word;
-          }}
-          mouthOpenness={mouthOpenness}
-          emotion={emotion}
-          onReplay={handleReplay}
-          canReplay={lastAssistantText.length > 0}
-          onCopy={handleCopy}
-          copied={copied}
-          onTranslate={() => {
-            void handleTranslate();
-          }}
-          isTranslating={isTranslating}
-          translation={translation}
-          showTranslation={showTranslation}
-        />
+          <div className="flex w-full max-w-[329px] flex-col gap-4 md:w-auto md:max-w-none md:flex-row">
+            {LANGUAGES.map((lang) => (
+              <button
+                key={lang.code}
+                type="button"
+                onClick={() => void handleLanguageSelect(lang)}
+                className="flex h-[60px] w-full items-center justify-center gap-2 rounded-[27px] bg-[#161d2f] px-5 text-white transition-colors hover:bg-[#1e2740] active:bg-[#0e1320] md:h-[44px] md:w-auto"
+              >
+                <span className="text-2xl">{lang.flag}</span>
+                <span className="text-[20px] md:text-[16px]" style={{ fontFamily: "Inter, sans-serif", fontWeight: 400 }}>{lang.name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        // ── Conversation UI ────────────────────────────────────────────────────
+        <div className="relative z-10 flex h-dvh flex-col">
+{/* Error banner */}
+          {localError && (
+            <div
+              role="alert"
+              className="mx-4 mb-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/50 dark:text-amber-200 sm:mx-6"
+            >
+              {localError}
+              <button
+                type="button"
+                className="ml-2 underline"
+                onClick={() => setLocalError(null)}
+              >
+                OK
+              </button>
+            </div>
+          )}
 
-        {/* Mic button + disclaimer */}
-        <MicControl
-          status={status}
-          micSupported={true}
-          onMicPress={() => {
-            void handleMicPress();
-          }}
-        />
-      </div>
+          {/* Main area: text + action bar */}
+          <TranscriptDisplay
+            text={lastAssistantText}
+            status={status}
+            isStreaming={false}
+            onPronounceWord={(word) => {
+              void (async () => {
+                try {
+                  const res = await fetch("/api/tts", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ text: word }),
+                  });
+                  if (!res.ok) return;
+                  const { audioBase64 } = await res.json() as { audioBase64: string };
+                  const binary = atob(audioBase64);
+                  const bytes = new Uint8Array(binary.length);
+                  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                  const blob = new Blob([bytes], { type: "audio/mpeg" });
+                  const url = URL.createObjectURL(blob);
+                  const audio = new Audio(url);
+                  audio.onended = () => URL.revokeObjectURL(url);
+                  void audio.play();
+                } catch { /* silent fail */ }
+              })();
+            }}
+            mouthOpenness={mouthOpenness}
+            emotion={emotion}
+            onReplay={handleReplay}
+            canReplay={lastAssistantText.length > 0}
+            onCopy={handleCopy}
+            copied={copied}
+            onTranslate={() => {
+              void handleTranslate();
+            }}
+            isTranslating={isTranslating}
+            translation={translation}
+            showTranslation={showTranslation}
+          />
+
+          {/* Mic + mode toggle + close */}
+          <MicControl
+            status={status}
+            micSupported={true}
+            onMicPress={() => { void handleMicPress(); }}
+            mode={mode}
+            onModeToggle={() => {
+              const newMode = mode === "conversation" ? "shadowing" : "conversation";
+              setMode(newMode);
+              if (conversation.status === "connected" && selectedLanguage) {
+                userEndedSessionRef.current = true;
+                pendingModeRestartRef.current = { lang: selectedLanguage, newMode };
+                void conversation.endSession();
+              }
+            }}
+            onClose={() => {
+              userEndedSessionRef.current = true;
+              void conversation.endSession();
+              setSelectedLanguage(null);
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }
 
-// ── Public export (wraps in ConversationProvider) ────────────────────────────
+// ── Public export (wraps in ConversationProvider + error boundary) ───────────
 export function SpeakingPartner() {
   return (
-    <ConversationProvider>
-      <SpeakingPartnerContent />
-    </ConversationProvider>
+    <SdkErrorBoundary>
+      <ConversationProvider>
+        <SpeakingPartnerContent />
+      </ConversationProvider>
+    </SdkErrorBoundary>
   );
 }

@@ -9,7 +9,9 @@
     "lint": "eslint",
     "server": "npx tsx server/speech-engine.mts",
     "engine:create": "npx tsx server/create-engine.mts",
-    "engine:update-url": "npx tsx server/update-engine-url.mts"
+    "engine:update-url": "npx tsx server/update-engine-url.mts",
+    "engine:configure": "npx tsx server/configure-engine.mts",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@elevenlabs/elevenlabs-js": "^2.49.1",
@@ -27,6 +29,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
+    "patch-package": "^8.0.1",
     "tailwindcss": "^4",
     "tsx": "^4.22.3",
     "typescript": "^5"

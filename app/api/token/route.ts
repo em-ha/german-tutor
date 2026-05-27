@@ -12,18 +12,27 @@ export async function GET() {
     );
   }
 
-  try {
-    const elevenlabs = new ElevenLabsClient({ apiKey });
-    const { token } =
-      await elevenlabs.conversationalAi.conversations.getWebrtcToken({
-        agentId,
-      });
-    return NextResponse.json({ token });
-  } catch (err) {
-    console.error("[Token] ElevenLabs error:", err);
-    return NextResponse.json(
-      { error: "Failed to generate conversation token" },
-      { status: 500 }
-    );
+  const elevenlabs = new ElevenLabsClient({ apiKey });
+  const delays = [0, 1000, 2500]; // retry up to 3 times with backoff (ms)
+
+  let lastErr: unknown;
+  for (const delay of delays) {
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    try {
+      const { token } =
+        await elevenlabs.conversationalAi.conversations.getWebrtcToken({
+          agentId,
+        });
+      return NextResponse.json({ token });
+    } catch (err) {
+      lastErr = err;
+      console.warn(`[Token] attempt failed (delay=${delay}ms):`, err);
+    }
   }
+
+  console.error("[Token] all retries exhausted:", lastErr);
+  return NextResponse.json(
+    { error: "Failed to generate conversation token" },
+    { status: 500 }
+  );
 }

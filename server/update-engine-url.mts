@@ -11,7 +11,8 @@
  * SPEECH_ENGINE_ID must already be set in .env.local
  */
 
-import "dotenv/config";
+import { config } from "dotenv";
+config({ path: ".env.local" });
 
 const wsUrl = process.argv[2];
 if (!wsUrl) {

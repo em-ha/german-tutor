@@ -6,12 +6,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "GROQ_API_KEY not set" }, { status: 503 });
   }
 
-  const body = await req.json() as { text?: string };
-  const { text } = body;
+  const body = await req.json() as { text?: string; sourceLang?: string };
+  const { text, sourceLang = "de" } = body;
 
   if (!text?.trim()) {
     return NextResponse.json({ error: "No text provided" }, { status: 400 });
   }
+
+  const langNames: Record<string, string> = {
+    en: "English",
+    de: "German",
+    es: "Spanish",
+  };
+  const langName = langNames[sourceLang] ?? "the given language";
 
   const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
@@ -24,8 +31,7 @@ export async function POST(req: NextRequest) {
       messages: [
         {
           role: "system",
-          content:
-            "You are a German-to-English translator. Translate the given German text into natural, fluent English. Return only the translation — no explanations, no extra text.",
+          content: `You are a translator. Translate the following ${langName} text into natural, fluent English. Return only the translation — no explanations, no extra text.`,
         },
         {
           role: "user",

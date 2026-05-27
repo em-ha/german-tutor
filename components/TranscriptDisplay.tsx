@@ -1,7 +1,7 @@
 "use client";
 
 import { ClickableTranscript } from "./ClickableTranscript";
-import { CharacterAvatar, type Emotion } from "./CharacterAvatar";
+import type { Emotion } from "./CharacterAvatar";
 
 export type PartnerStatus = "idle" | "listening" | "thinking" | "speaking";
 
@@ -39,35 +39,21 @@ export function TranscriptDisplay({
   translation,
   showTranslation,
 }: Props) {
-  // Active = any text exists or app is doing something
-  const isActive = text.length > 0 || status !== "idle";
   const hasText = text.length > 0;
+  const isIdle = text.length === 0 && status === "idle";
 
-  if (!isActive) {
-    // ── IDLE STATE ─────────────────────────────────────────────────────────
-    return (
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 px-6">
-        <CharacterAvatar mouthOpenness={mouthOpenness} emotion={emotion} size={200} />
-        <p className="text-base text-[#494949] dark:text-zinc-400">
-          Tap the mic and speak in German
-        </p>
-      </div>
-    );
-  }
-
-  // ── ACTIVE STATE ──────────────────────────────────────────────────────────
-  // Character is rendered in SpeakingPartner (absolutely positioned behind this).
+  // Character (dome blob) is always rendered in SpeakingPartner behind this layer.
   // pt-[35dvh] pins the text to start below the face (which occupies the top ~30dvh).
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-start overflow-y-auto pt-[35dvh] pb-4 px-6 text-center">
-      {hasText ? (
+      {isIdle ? null : hasText ? (
         <div className="flex w-full max-w-sm flex-col items-center gap-2">
           {/* German text */}
           <ClickableTranscript
             text={text}
             isStreaming={isStreaming}
             onPronounce={onPronounceWord}
-            className="text-[32px] font-semibold leading-snug text-zinc-900"
+            className="text-[32px] leading-snug text-zinc-900 font-[family-name:var(--font-special-gothic)]"
           />
 
           {/* Translation */}
@@ -84,15 +70,7 @@ export function TranscriptDisplay({
                 {copied ? <CheckIcon /> : <CopyIcon />}
               </ActionButton>
 
-              <ActionButton
-                onClick={onReplay}
-                disabled={!canReplay || status === "speaking"}
-                label="Replay"
-              >
-                <SpeakerIcon />
-              </ActionButton>
-
-              <ActionButton
+<ActionButton
                 onClick={onTranslate}
                 disabled={isTranslating}
                 label={showTranslation ? "Hide translation" : "Translate"}
@@ -104,7 +82,7 @@ export function TranscriptDisplay({
           )}
         </div>
       ) : (
-        // Thinking state — no text yet
+        // Thinking/connecting — no text yet
         <p className="text-base text-zinc-700">…</p>
       )}
     </div>
