@@ -20,7 +20,7 @@ const specialGothic = Special_Gothic_Condensed_One({
 });
 
 export const metadata: Metadata = {
-  title: "Deutsch Partner — Sprechen üben",
+  title: "Quatschi",
   description: "German speaking practice — voice-first partner",
 };
 
