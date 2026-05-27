@@ -32,7 +32,8 @@ if (!wsUrl) {
 
 const elevenlabs = new ElevenLabsClient({ apiKey });
 
-await elevenlabs.speechEngine.update(engineId, {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+await (elevenlabs.speechEngine.update as any)(engineId, {
   tts: {
     voiceId,
     modelId: "eleven_flash_v2_5", // low-latency conversational model
