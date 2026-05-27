@@ -312,7 +312,7 @@ elevenlabs.speechEngine.attach(SPEECH_ENGINE_ID, httpServer, "/ws", {
   },
 
   async onTranscript(transcript, signal, session) {
-    const data = sessions.get(session.conversationId) ?? {
+    const data = sessions.get(session.conversationId!) ?? {
       language: "German", level: "A2", transcripts: [], corrections: [], turnCount: 0, mode: "conversation" as const,
     };
     data.turnCount++;
@@ -441,16 +441,16 @@ elevenlabs.speechEngine.attach(SPEECH_ENGINE_ID, httpServer, "/ws", {
   },
 
   onClose(_session) {
-    const d = sessions.get(_session.conversationId);
+    const d = sessions.get(_session.conversationId!);
     if (d) {
       console.log(`[Quatschi] Session ended — level: ${d.level}, corrections: ${d.corrections.length}`);
     }
-    sessions.delete(_session.conversationId);
+    sessions.delete(_session.conversationId!);
   },
 
   onDisconnect(_session) {
     console.log("[Quatschi] Session disconnected");
-    sessions.delete(_session.conversationId);
+    sessions.delete(_session.conversationId!);
   },
 
   onError(err) {
