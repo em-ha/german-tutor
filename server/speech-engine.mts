@@ -20,7 +20,10 @@ import OpenAI from "openai";
 import { config } from "dotenv";
 config({ path: ".env.local" });
 
-const TRANSCRIPT_DIR = "/Users/emmahartwig/Documents/claude-emma-gdrive/quatschi-local-transcripts";
+// On Railway: writes to the container's ephemeral filesystem (lost on redeploy — transcripts
+// are only persisted locally via the Mac path). On local dev: use the absolute Mac path if set.
+const TRANSCRIPT_DIR = process.env.TRANSCRIPT_DIR
+  ?? "/Users/emmahartwig/Documents/claude-emma-gdrive/quatschi-local-transcripts";
 mkdirSync(TRANSCRIPT_DIR, { recursive: true });
 
 const SPEECH_ENGINE_ID = process.env.SPEECH_ENGINE_ID;
@@ -637,6 +640,11 @@ elevenlabs.speechEngine.attach(SPEECH_ENGINE_ID, httpServer, "/ws", {
         { signal }
       );
     } catch (err) {
+      // If the request was aborted by an interrupt, stay silent — don't crash the session.
+      if (signal.aborted || (err as Error).name === "AbortError") {
+        console.log("[Quatschi] LLM call aborted by interrupt — staying silent");
+        return;
+      }
       const isRateLimit =
         (err instanceof Groq.RateLimitError) ||
         (err instanceof OpenAI.RateLimitError);
@@ -647,7 +655,8 @@ elevenlabs.speechEngine.attach(SPEECH_ENGINE_ID, httpServer, "/ws", {
           { signal }
         );
       } else {
-        throw err;
+        console.error("[Quatschi] LLM error:", err);
+        return; // stay silent rather than crashing the session
       }
     }
 
