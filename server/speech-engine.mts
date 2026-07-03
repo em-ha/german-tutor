@@ -13,9 +13,15 @@
 
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import { createServer } from "node:http";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import Groq from "groq-sdk";
+import OpenAI from "openai";
 import { config } from "dotenv";
 config({ path: ".env.local" });
+
+const TRANSCRIPT_DIR = "/Users/emmahartwig/Documents/claude-emma-gdrive/quatschi-local-transcripts";
+mkdirSync(TRANSCRIPT_DIR, { recursive: true });
 
 const SPEECH_ENGINE_ID = process.env.SPEECH_ENGINE_ID;
 if (!SPEECH_ENGINE_ID) throw new Error("SPEECH_ENGINE_ID env var is required");
@@ -23,10 +29,24 @@ if (!process.env.ELEVENLABS_API_KEY) throw new Error("ELEVENLABS_API_KEY env var
 if (!process.env.GROQ_API_KEY) throw new Error("GROQ_API_KEY env var is required");
 
 const elevenlabs = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-const GROQ_PRIMARY = "llama-3.3-70b-versatile";
-const GROQ_FALLBACK = "llama-3.1-8b-instant";
+// ── LLM provider — swap PROVIDER to switch between Groq and Gemini ────────────
+// To revert to Groq: change PROVIDER back to "groq"
+const PROVIDER = "gemini"; // "groq" | "gemini"
+
+// Groq client — used when PROVIDER === "groq"
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY ?? "" });
+
+// OpenAI-compatible client pointing at Gemini — used when PROVIDER === "gemini"
+const gemini = new OpenAI({
+  apiKey: process.env.GEMINI_API_KEY ?? "",
+  baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
+});
+
+// The active client and model names, chosen by PROVIDER
+const llm: OpenAI | Groq   = PROVIDER === "gemini" ? gemini : groq;
+const GROQ_PRIMARY   = PROVIDER === "gemini" ? "gemini-2.5-flash"       : "llama-3.3-70b-versatile";
+const GROQ_FALLBACK  = PROVIDER === "gemini" ? "gemini-2.5-flash"       : "llama-3.1-8b-instant";
 
 // ── Language detection ────────────────────────────────────────────────────────
 
@@ -87,50 +107,148 @@ interface Correction { said: string; correct: string; }
 interface SessionData {
   language: string;       // "German" | "English" | "Spanish"
   level: string;          // "A1" | "A2" | "B1" | "B2"
-  transcripts: string[];  // user turn texts, accumulated for level calibration
+  transcripts: string[];  // user turn texts, accumulated for echo chamber detection
+  fullTranscript: Array<{ role: string; content: string }>; // full conversation for saving
   corrections: Correction[];
   turnCount: number;
   mode: "conversation" | "shadowing";
+  startedAt: Date;
 }
 
 const sessions = new Map<string, SessionData>();
+
+// ── Active level config — update here to change or expand available levels ───
+
+const LEVEL_CONFIG = {
+  available: ["B1"] as string[],
+  default: "B1",
+};
 
 // ── Level → TTS stability mapping ────────────────────────────────────────────
 
 const STABILITY_MAP: Record<string, number> = { A1: 0.9, A2: 0.8, B1: 0.6, B2: 0.4 };
 
+// ── Level rules — add entries here when new levels are enabled ────────────────
+
+const LEVEL_RULES: Record<string, string> = {
+  A1: `Speak at A1 level: very short sentences (3–5 words), basic present tense only, core vocabulary (numbers, colours, greetings, family). Use one short English support phrase if the user is completely stuck.`,
+  A2: `Speak at A2 level: short sentences (5–8 words), present and simple past tense, everyday vocabulary (shopping, weather, daily routines). Minimal English support only if needed.`,
+  B1: `Speak at B1 level — natural, clear, spoken German. The B1 standard is not perfect German. It is clear, functional, communicative German.
+
+GRAMMAR — use freely:
+- Tenses: Präsens for present facts and future plans; Perfekt for all spoken past events (ich habe... / ich bin...); Präteritum only for: war, hatte, wollte, konnte, musste, durfte, sollte; werden only for predictions.
+- Modals in Präsens: können, müssen, dürfen, wollen, sollen, möchten. Modals in Präteritum: konnte, musste, durfte, wollte, sollte.
+- Sentence structure: V2 rule in main clauses; inversion after fronted adverbials (Morgen fahre ich nach Berlin); short linked clauses preferred over complex embedding.
+- Subordinate clauses — maximum ONE per sentence, never stacked: weil (reason), dass (content), wenn (condition), als (single past event), ob (indirect question), obwohl (concession), bevor / nachdem (time sequence). Verb-final rule applied.
+- Separable verbs: anrufen, aufstehen, aufhören, mitkommen, einkaufen — correct separation automatic.
+- Reflexive verbs: sich freuen, sich fühlen, sich interessieren für, sich treffen mit — correct pronoun placement.
+- Prepositions: Akkusativ (für, durch, ohne, um, gegen); Dativ (mit, bei, nach, seit, von, zu, aus); two-way prepositions — location uses Dativ (Ich bin im Park), direction uses Akkusativ (Ich gehe in den Park).
+- Genitiv — always avoided in speech; use von + Dativ instead: "das Auto von meinem Vater" not "das Auto meines Vaters".
+- Konjunktiv II — essential for natural spoken B1: würde + Infinitiv (hypothetical/polite), wäre, hätte, könnte (polite requests: "Könntest du mir helfen?"), sollte (mild suggestions: "Du solltest mal probieren..."). Use at least one Konjunktiv II form every 3–4 turns in questions, suggestions, or hypotheticals.
+- Adjectives: predicative fully accurate (Das ist schön); attributive minor errors tolerated; comparatives fine (schneller, besser, größer, am liebsten).
+- Spoken markers — use naturally: Also... / Ähm... / Außerdem... / Zum Beispiel... / doch / mal / ja / eigentlich / halt.
+- Negation: nicht and kein automatic and accurate. No double negation.
+
+GRAMMAR — never use:
+- Passive voice → use man instead: "Man macht das" not "Das wird gemacht"
+- Konjunktiv I (reported speech)
+- Plusquamperfekt in production
+- Genitiv case
+- Extended participial phrases
+- Stacked subordinate clauses (more than one per sentence)
+
+VOCABULARY — talk about:
+Daily routine, work and study, travel and transport, food and shopping, health and body, hobbies and free time, weather, feelings and relationships, simple opinions and preferences.
+
+VOCABULARY — never use:
+Abstract or political topics, technical jargon, idioms and fixed expressions, regional slang, low-frequency or literary vocabulary.`,
+  B2: `Speak at B2 level: varied sentence structures, Konjunktiv II for hypotheticals, passive voice, idiomatic expressions, abstract topics. No English support.`,
+};
+
 // ── System prompt ─────────────────────────────────────────────────────────────
 
 function buildSystemPrompt(language: string, level: string, recentTranscripts: string[], frequentWords: string[] = []): string {
   const recentContext = recentTranscripts.length > 0
-    ? `\nThe user's last ${recentTranscripts.length} message(s) for level calibration:\n${recentTranscripts.map((t, i) => `[Turn ${i + 1}]: ${t}`).join("\n")}`
+    ? `\nThe user's last ${recentTranscripts.length} message(s) for context:\n${recentTranscripts.map((t, i) => `[Turn ${i + 1}]: ${t}`).join("\n")}`
     : "";
 
   const echoChamberNote = frequentWords.length > 0
     ? `\nThe user keeps reaching for the same words: ${frequentWords.join(", ")}. Weave richer alternatives naturally into your reply — never point this out directly.`
     : "";
 
-  return `You are Quatschi, a friendly spoken language practice partner helping the user build confidence speaking ${language}.
+  return `You are Quatschi, a warm, playful conversation partner helping the user build confidence speaking ${language}. You are not a teacher.
 
-You are not a teacher. You are warm, playful, encouraging. Keep responses short — 1 to 3 sentences (spoken aloud). Ask one question at a time.
-ALWAYS respond in ${language}. If the user is completely stuck, use their stronger language for one sentence only, then return immediately.
+CORE PROMISE:
+- Speak natural ${language} consistently at the active level
+- Never point out mistakes — ever
+- Model correct forms naturally in your replies
+- Keep the learner talking and feeling confident
+- Ask one clear, concrete question at a time
 
-CRITICAL — never ask a chained question: if your previous reply already ended with a question and the user has not yet answered it, do NOT ask another question. Acknowledge what they said (or gently wait) instead. Only ask a new question once the user has actually responded to the last one.
+VOICE RULES — this is a spoken app, not text:
+- Sentences are 8–15 words — count before you output; split any sentence over 15 words into two
+- One idea per sentence
+- Subordinate clauses count toward the word total of the sentence they belong to
+- Maximum one subordinate clause per sentence — never stacked
+- Questions are concrete and direct: "Wo arbeitest du?" not "Inwiefern beeinflusst deine Arbeit deinen Alltag?"
+- No bureaucratic or written-style German
+- Common connectors: und, aber, oder, weil, dass, wenn, also, trotzdem, deshalb
+- Use discourse markers to open sentences naturally: 'Also, ...' (to continue a thought), 'Zum Beispiel, ...' (to illustrate), 'Außerdem ...' (to add a point). Aim for at least one of these every 4–5 turns.
+- Never use English unless the user is completely stuck — one sentence only, then return to ${language} immediately
 
-Calibrate your vocabulary and sentence complexity to the user's actual observed level. If they handle complex grammar confidently, use richer language. If they struggle, simplify. Never mention their level to the user.${recentContext}${echoChamberNote}
+ACKNOWLEDGMENT OPENERS — vary these across turns; never use the same opener twice in a row and avoid using any single opener more than once every 4 turns:
+- Surprise / delight: 'Oh schön!', 'Oh interessant!', 'Oh wirklich?'
+- Agreement: 'Ja, genau!', 'Stimmt!', 'Das stimmt.'
+- Continuation: 'Also, ...', 'Und dann?', 'Erzähl mal!'
+- Empathy: 'Das klingt toll.', 'Das verstehe ich.', 'Das kann ich mir vorstellen.'
+- Minimal: 'Gut!', 'Super!', 'Cool!'
+Reserve 'Ah' variants ('Ah, ich verstehe', 'Ah, du meinst') for genuine moments of realisation — maximum once every 5 turns.
 
-Never explicitly correct the user. When they make a grammar or vocabulary error, naturally echo the correct form woven into your reply without drawing attention to it.
+CORRECTION RULES:
+- Never explicitly correct the user
+- Never say "Das ist falsch", "Du solltest sagen...", or anything that implies the user made a mistake
+- When the user makes an error, naturally echo the correct form woven into your reply — never draw attention to it
+- Focus on one correction at a time — never stack corrections
+- Prioritise errors in this order: (1) wrong pronoun case, (2) wrong verb form, (3) wrong article or preposition, (4) wrong word choice. Pick the highest-priority error and recast it.
+- The recast must use the SAME word or phrase the user used, corrected — not a synonym or a different construction that avoids the error entirely.
+- Good correction example:
+  User: "Ich habe gestern ins Kino gegangen."
+  Quatschi: "Oh schön, du bist gestern ins Kino gegangen! Was hast du gesehen?"
+- Bad correction example (avoids the error instead of recasting it):
+  User: "ich versuche du besser zu machen"
+  Quatschi: "Du arbeitest daran, mich zu programmieren und mich besser zu machen." ← uses 'mich' for self-reference, never recasts 'du→dich'
 
-At the very start of every reply, output a JSON block. You MUST independently assess the user's CEFR level from what you observe — look at their vocabulary range, grammar accuracy, and sentence complexity. Do NOT default to A2.
+CONVERSATION RULES:
+- Keep responses to 1–3 sentences — count every sentence including exclamations like 'Hallo!' or 'Ja!' before outputting; if you have more than 3, cut the least important one
+- Ask one question at a time — never chain questions
+- A confirmation tag ('habe ich das richtig verstanden?') counts as a question — if you include one, it IS your one question for that turn; do not add a second question after it
+- Choose: either confirm OR ask something new, never both
+- Acknowledge what the user said before asking anything new
+- If your previous reply ended with a question and the user has not yet answered it, do NOT ask another question — acknowledge what they said instead
+- Never repeat a response you have already given verbatim — if you find yourself writing the same sentence again, stop and write something new that moves the conversation forward
+- When the user confirms understanding (e.g. 'Ah okay', 'I see', 'Verstehe'), treat that as a closed topic and open a new one — do not re-explain or repeat
+- If the user is struggling, simplify naturally — never comment on it
+- The conversation has already started — do not re-introduce yourself or repeat the opening greeting
+- Never say 'Hallo' after the first turn — not as a greeting, not as a filler, not as a recovery opener. Use 'Hey', 'Oh', 'Ah', 'Ja', or a direct acknowledgment instead.
+
+EMOTIONAL TONE:
+- Always warm, encouraging, and playful
+- Never clinical, teacher-like, or condescending
+- Celebrate effort, not perfection
+- Never make the user feel judged or corrected
+
+ACTIVE LEVEL:
+${LEVEL_RULES[level] ?? LEVEL_RULES[LEVEL_CONFIG.default]}
+Never mention the user's level to them.${recentContext}${echoChamberNote}
+
+METADATA — output this at the very start of every reply, before anything else:
+Assess the user's CEFR level independently from what you observe — vocabulary range, grammar accuracy, sentence complexity. Do NOT default to A2.
 Example with corrections: {"corrections": [{"said": "ich bin hungrig", "correct": "ich habe Hunger"}], "level": "B1"}
-Example without corrections: {"corrections": [], "level": "B2"}
-Replace the level with YOUR assessment: A1 (very basic), A2 (elementary), B1 (intermediate), B2 (upper-intermediate).
-Follow the JSON block with a blank line, then your conversational response.
-METADATA FORMAT — follow exactly, no exceptions:
-Line 1: {"corrections": [...], "level": "??"}   ← replace ?? with your actual assessment
+Example without corrections: {"corrections": [], "level": "B1"}
+FORMAT — follow exactly, no exceptions:
+Line 1: {"corrections": [...], "level": "??"}   ← replace ?? with A1 / A2 / B1 / B2
 Line 2: (blank line — exactly one empty line)
 Line 3+: your conversational reply in ${language}
-
 Do NOT wrap the JSON in markdown code fences. Do NOT add any text before the JSON. Start your response with { and nothing else.`;
 }
 
@@ -224,32 +342,37 @@ function getFrequentWords(transcripts: string[], language: string, minCount = 3)
 
 function buildShadowingPrompt(language: string, level: string): string {
   const retryPhrase = RETRY_PHRASE[language] ?? "Let me say that again:";
-  return `You are Quatschi in ECHO MODE, helping the user practise ${language} pronunciation and fluency.
+  return `You are Quatschi in ECHO MODE, helping the user practise ${language} pronunciation and sentence rhythm.
 
-Your job each turn:
-1. Say ONE short, natural sentence in ${language} appropriate for ${level} level (5–10 words).
-2. After the user repeats it back, check their response against what you said:
-   - Close enough (same meaning, similar words): praise them briefly in ${language} only (NEVER in German unless this IS a German session), then give the NEXT sentence.
-   - Significantly off or unclear: say the sentence again naturally using "${retryPhrase} …" and invite one more attempt.
-3. After 5–6 successful sentences, give brief encouraging feedback and offer to continue.
+YOUR JOB EACH TURN:
+1. Say ONE short, natural ${language} sentence at B1 level — 5 to 10 words, clear and speakable.
+   Use natural B1 structures: Perfekt for past, modal verbs, simple subordinate clauses.
+   Avoid passive voice, complex embedding, or literary vocabulary.
+2. After the user repeats it back:
+   - Close enough (same meaning, similar words) → brief praise in ${language} only, then give the NEXT sentence
+   - Significantly off or unclear → repeat using "${retryPhrase} …" and invite one more attempt
+3. After 5–6 successful sentences → brief warm encouragement in ${language}, offer to continue
 
 CRITICAL RULES — never break these:
-- NEVER ask questions about or react to the content of what the user said. Their words are only a repetition attempt — treat them as sounds to evaluate, not as meaning to respond to.
-- NEVER react to background noise, random words, or anything that is not a clear repetition attempt. If the input seems like noise or is unrelated to your sentence — just repeat your sentence again.
-- Any questions you ask must be generic and scripted (e.g. "Shall we continue?", "Ready for the next one?") — never based on what you heard.
-- Never give more than one sentence at a time.
-- Keep sentences clear and progressively more varied in structure.
-- Stay warm and encouraging. Never say "wrong" or "incorrect."
-- Match sentence complexity to ${level} level.
+- NEVER react to the content of what the user said — treat their words as sound to evaluate, not meaning to respond to
+- NEVER ask content-based questions — only generic scripted prompts: "Sollen wir weitermachen?" / "Bereit für den nächsten Satz?"
+- NEVER react to background noise or unrelated input — just repeat your sentence calmly
+- Never give more than one sentence at a time
+- Keep sentences varied in structure across the session
+- Stay warm and encouraging — never say "wrong", "incorrect", or anything that implies failure
 
-At the very start of every reply output a JSON block, then your response:
+EMOTIONAL TONE:
+- Warm, calm, and encouraging throughout
+- Celebrate effort and small wins
+- Never make the user feel judged
+
+METADATA — output this at the very start of every reply:
 {"corrections": [], "level": "??"}
-Set level to your CEFR assessment of this turn. Corrections are usually empty in shadowing mode.
-METADATA FORMAT — follow exactly, no exceptions:
-Line 1: {"corrections": [], "level": "??"}   ← replace ?? with A1/A2/B1/B2
+Set level to your CEFR assessment of this turn. Corrections are almost always empty in Echo mode.
+FORMAT — follow exactly:
+Line 1: {"corrections": [], "level": "??"}   ← replace ?? with A1 / A2 / B1 / B2
 Line 2: (blank line — exactly one empty line)
-Line 3+: your shadowing response in ${language}
-
+Line 3+: your Echo mode response in ${language}
 Do NOT wrap the JSON in markdown code fences. Do NOT add any text before the JSON. Start your response with { and nothing else.`;
 }
 
@@ -259,8 +382,58 @@ type JsonMeta = { corrections: Correction[]; level: string };
 
 /**
  * Strips the JSON metadata block Quatschi emits at the start of every reply.
+/**
+ * Parses JSON metadata + response text from a complete (non-streaming) LLM reply.
+ * The LLM is asked to output one JSON line, a blank line, then the reply.
+ * Returns the conversational text (everything after the JSON block).
+ */
+function parseMetaFromText(
+  fullText: string,
+  onMeta: (meta: JsonMeta) => void,
+): string {
+  if (!fullText) return "";
+
+  // Strip any leading markdown fence Gemini sometimes adds (```json ... ```)
+  const trimmed = fullText.replace(/^```(?:json)?\s*/i, "").trimStart();
+
+  if (!trimmed.startsWith("{")) {
+    console.warn("[Quatschi] header not found — raw output:", fullText.slice(0, 300));
+    return fullText.trim();
+  }
+
+  // Find the matching closing brace by counting depth.
+  // A simple regex like \{[\s\S]*?\} breaks when corrections have nested objects
+  // because the non-greedy *? stops at the first } (closing the inner object).
+  let depth = 0;
+  let jsonEnd = -1;
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) { jsonEnd = i; break; }
+    }
+  }
+
+  if (jsonEnd === -1) {
+    // JSON was cut off mid-response (e.g. max_tokens hit) — stay silent rather
+    // than speaking raw JSON to the user.
+    console.warn("[Quatschi] unclosed JSON — response truncated, staying silent");
+    return "";
+  }
+
+  const jsonStr = trimmed.slice(0, jsonEnd + 1);
+  const rest = trimmed.slice(jsonEnd + 1).trim();
+
+  console.log("[Quatschi] header stripped:", jsonStr);
+  try { onMeta(JSON.parse(jsonStr) as JsonMeta); } catch { /* malformed — ignore */ }
+  return rest;
+}
+
+/**
  * Buffers chunks until the blank line separating JSON from the conversational
  * text is found, then forwards everything after it. Fires onMeta with parsed data.
+ * Kept for reference — current code uses non-streaming + parseMetaFromText instead.
  */
 async function* stripAndParse(
   stream: AsyncIterable<{ choices: Array<{ delta: { content?: string | null } }> }>,
@@ -292,6 +465,42 @@ async function* stripAndParse(
   }
 }
 
+// ── Transcript saving ─────────────────────────────────────────────────────────
+
+function saveTranscript(conversationId: string, data: SessionData): void {
+  try {
+    const date = data.startedAt;
+    const dateStr = date.toISOString().replace(/T/, "_").replace(/:/g, "-").slice(0, 19);
+    const filename = `${dateStr}_${conversationId.slice(-8)}.txt`;
+    const filepath = join(TRANSCRIPT_DIR, filename);
+
+    const header = [
+      `Quatschi Session Transcript`,
+      `Date: ${date.toLocaleDateString("en-GB", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}`,
+      `Time: ${date.toLocaleTimeString("en-GB")}`,
+      `Mode: ${data.mode}`,
+      `Level: ${data.level}`,
+      `Turns: ${data.turnCount}`,
+      `Corrections logged: ${data.corrections.length}`,
+      `─`.repeat(50),
+      "",
+    ].join("\n");
+
+    const body = data.fullTranscript
+      .filter((m) => m.content.trim() && !m.content.match(/^\[MODE_SWITCH:\w+\]$/))
+      .map((m) => {
+        const label = m.role === "agent" ? "Agent" : "User";
+        return `${label}: ${m.content.trim()}`;
+      })
+      .join("\n\n");
+
+    writeFileSync(filepath, header + body + "\n", "utf-8");
+    console.log(`[Quatschi] Transcript saved: ${filename}`);
+  } catch (err) {
+    console.error("[Quatschi] Failed to save transcript:", err);
+  }
+}
+
 // ── HTTP + Speech Engine ──────────────────────────────────────────────────────
 
 const httpServer = createServer();
@@ -302,20 +511,23 @@ elevenlabs.speechEngine.attach(SPEECH_ENGINE_ID, httpServer, "/ws", {
   onInit(conversationId) {
     sessions.set(conversationId, {
       language: "German",
-      level: "A2",
+      level: LEVEL_CONFIG.default,
       transcripts: [],
+      fullTranscript: [],
       corrections: [],
       turnCount: 0,
       mode: "conversation",
+      startedAt: new Date(),
     });
     console.log("[Quatschi] Session started:", conversationId);
   },
 
   async onTranscript(transcript, signal, session) {
     const data = sessions.get(session.conversationId!) ?? {
-      language: "German", level: "A2", transcripts: [], corrections: [], turnCount: 0, mode: "conversation" as const,
+      language: "German", level: LEVEL_CONFIG.default, transcripts: [], fullTranscript: [], corrections: [], turnCount: 0, mode: "conversation" as const, startedAt: new Date(),
     };
     data.turnCount++;
+    data.fullTranscript = transcript; // keep latest snapshot of full conversation
 
     // Detect language once on turn 1 only — avoids re-detection drift on later turns
     if (data.turnCount === 1) {
@@ -397,33 +609,41 @@ elevenlabs.speechEngine.attach(SPEECH_ENGINE_ID, httpServer, "/ws", {
       ? buildShadowingPrompt(language, data.level)
       : buildSystemPrompt(language, data.level, recentTranscripts, frequentWords);
 
-    // Strip [MODE_SWITCH:] from messages sent to the LLM — replace with neutral placeholder
-    const groqMessages = transcript.map((m) => ({
+    // Strip [MODE_SWITCH:] from messages sent to the LLM — replace with neutral placeholder.
+    // Cap at last 12 messages (6 turns) — Gemini only needs recent context to converse
+    // naturally, and sending the full transcript grows token usage linearly with turn count.
+    const groqMessages = transcript.slice(-12).map((m) => ({
       role: m.role === "agent" ? ("assistant" as const) : ("user" as const),
       content: m.content.match(/^\[MODE_SWITCH:\w+\]$/) ? "…" : m.content,
     }));
 
-    const groqParams = {
+    // Non-streaming: wait for the full reply before handing it to ElevenLabs.
+    // This prevents the race condition where ElevenLabs interrupts the stream
+    // between the JSON header chunk and the conversational text chunk, causing
+    // 0 chunks to be sent and triggering a bounce loop.
+    const completionParams = {
       messages: [
         { role: "system" as const, content: systemPrompt },
         ...groqMessages,
       ],
-      max_tokens: 150,
+      max_tokens: 1024,
       temperature: 0.8,
-      stream: true as const,
     };
 
-    let stream;
+    let completion;
     try {
-      stream = await groq.chat.completions.create(
-        { model: GROQ_PRIMARY, ...groqParams },
+      completion = await (llm as OpenAI).chat.completions.create(
+        { model: GROQ_PRIMARY, ...completionParams },
         { signal }
       );
     } catch (err) {
-      if (err instanceof Groq.RateLimitError) {
+      const isRateLimit =
+        (err instanceof Groq.RateLimitError) ||
+        (err instanceof OpenAI.RateLimitError);
+      if (isRateLimit) {
         console.warn(`[Quatschi] Primary model rate-limited — falling back to ${GROQ_FALLBACK}`);
-        stream = await groq.chat.completions.create(
-          { model: GROQ_FALLBACK, ...groqParams },
+        completion = await (llm as OpenAI).chat.completions.create(
+          { model: GROQ_FALLBACK, ...completionParams },
           { signal }
         );
       } else {
@@ -431,25 +651,31 @@ elevenlabs.speechEngine.attach(SPEECH_ENGINE_ID, httpServer, "/ws", {
       }
     }
 
-    session.sendResponse(
-      stripAndParse(stream, (meta) => {
-        data.level = meta.level;
-        data.corrections.push(...meta.corrections);
-        console.log(`[Quatschi] parsed meta — level=${meta.level} corrections=${JSON.stringify(meta.corrections)}`);
-      })
-    );
+    const fullText = completion.choices[0]?.message?.content ?? "";
+    const responseText = parseMetaFromText(fullText, (meta) => {
+      data.level = LEVEL_CONFIG.available.includes(meta.level) ? meta.level : LEVEL_CONFIG.default;
+      // Cap to 1 correction per turn — the prompt already asks for one, but enforcing it
+      // here keeps the JSON short and prevents long correction strings from hitting max_tokens.
+      data.corrections.push(...meta.corrections.slice(0, 1));
+      console.log(`[Quatschi] parsed meta — level=${meta.level} corrections=${JSON.stringify(meta.corrections)}`);
+    });
+
+    session.sendResponse((async function* () { if (responseText) yield responseText; })());
   },
 
   onClose(_session) {
     const d = sessions.get(_session.conversationId!);
     if (d) {
       console.log(`[Quatschi] Session ended — level: ${d.level}, corrections: ${d.corrections.length}`);
+      saveTranscript(_session.conversationId!, d);
     }
     sessions.delete(_session.conversationId!);
   },
 
   onDisconnect(_session) {
     console.log("[Quatschi] Session disconnected");
+    const d = sessions.get(_session.conversationId!);
+    if (d && d.fullTranscript.length > 0) saveTranscript(_session.conversationId!, d);
     sessions.delete(_session.conversationId!);
   },
 
