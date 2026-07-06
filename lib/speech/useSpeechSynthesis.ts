@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSynthesisSupported } from "./clientCapabilities";
-import { apiHeaders } from "@/lib/apiAuth";
 
 const LANG = "de-DE";
 
@@ -103,7 +102,7 @@ export function useSpeechSynthesis() {
       try {
         const res = await fetch("/api/tts", {
           method: "POST",
-          headers: apiHeaders({ "Content-Type": "application/json" }),
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text }),
         });
 
