@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkApiSecret } from "@/lib/apiAuth";
+import type { GermanLevel } from "@/lib/mockSpeakingPartner";
 
 const SYSTEM_PROMPT = `You are a friendly German conversation partner helping someone practise spoken German.
 
@@ -10,19 +10,22 @@ Your job:
 - Ask a follow-up question to keep the conversation going
 - Stay warm, encouraging and patient
 
+Level guidelines:
+- A1: Use only very simple words and short sentences. Speak slowly and clearly.
+- A2: Use everyday vocabulary. Short sentences. Introduce common phrases.
+- B1: More natural speech. Slightly longer sentences. Introduce some idioms.
+
 Important: Always reply in German. If the user writes in English, gently remind them to try in German.`;
 
 type ChatRequest = {
   userText: string;
+  level: GermanLevel;
   turnCount: number;
   lastAssistantText: string | null;
   topicContext?: string | null;
 };
 
 export async function POST(req: NextRequest) {
-  const authError = checkApiSecret(req);
-  if (authError) return authError;
-
   const apiKey = process.env.GROQ_API_KEY;
 
   if (!apiKey) {
@@ -33,13 +36,14 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json() as ChatRequest;
-  const { userText, turnCount, lastAssistantText, topicContext } = body;
+  const { userText, level, turnCount, lastAssistantText, topicContext } = body;
 
   if (!userText?.trim()) {
     return NextResponse.json({ error: "No text provided" }, { status: 400 });
   }
 
   const contextNote = topicContext ? `\nThe current conversation topic is: ${topicContext}` : "";
+  const levelNote = `\nSpeak at level ${level}.`;
   const history = lastAssistantText
     ? `\nYour last message was: "${lastAssistantText}"\nThis is turn ${turnCount + 1} of the conversation.`
     : `\nThis is the start of the conversation (turn ${turnCount + 1}).`;
@@ -55,7 +59,7 @@ export async function POST(req: NextRequest) {
       messages: [
         {
           role: "system",
-          content: SYSTEM_PROMPT + contextNote + history,
+          content: SYSTEM_PROMPT + levelNote + contextNote + history,
         },
         {
           role: "user",
