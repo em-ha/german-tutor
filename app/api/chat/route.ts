@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { GermanLevel } from "@/lib/mockSpeakingPartner";
 import { checkApiSecret } from "@/lib/apiAuth";
 
 const SYSTEM_PROMPT = `You are a friendly German conversation partner helping someone practise spoken German.
@@ -20,7 +19,7 @@ Important: Always reply in German. If the user writes in English, gently remind 
 
 type ChatRequest = {
   userText: string;
-  level: GermanLevel;
+  level: string;
   turnCount: number;
   lastAssistantText: string | null;
   topicContext?: string | null;
