@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { checkApiSecret } from "@/lib/apiAuth";
 
 export async function POST(req: NextRequest) {
+  const authError = checkApiSecret(req);
+  if (authError) return authError;
   const apiKey = process.env.ELEVENLABS_API_KEY;
   const voiceId = process.env.ELEVENLABS_VOICE_ID;
 

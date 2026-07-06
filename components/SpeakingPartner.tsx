@@ -4,6 +4,7 @@ import { Component, useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { LANGUAGES, getPickerHeading, type Language } from "@/lib/languages";
+import { apiHeaders } from "@/lib/apiAuth";
 import { useMouthAnimation } from "@/lib/useMouthAnimation";
 import type { Emotion } from "./CharacterAvatar";
 import { CharacterAvatar } from "./CharacterAvatar";
@@ -276,7 +277,7 @@ function SpeakingPartnerContent() {
   useEffect(() => {
     const prefetch = async () => {
       try {
-        const res = await fetch("/api/token");
+        const res = await fetch("/api/token", { headers: apiHeaders() });
         if (res.ok) {
           const { token } = (await res.json()) as { token: string };
           prefetchedTokenRef.current = token;
@@ -298,7 +299,7 @@ function SpeakingPartnerContent() {
     const delays = [0, 1500, 3000, 5000];
     for (const delay of delays) {
       if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-      const res = await fetch("/api/token");
+      const res = await fetch("/api/token", { headers: apiHeaders() });
       if (res.ok) {
         const { token } = (await res.json()) as { token: string };
         return token;
@@ -333,7 +334,7 @@ function SpeakingPartnerContent() {
       });
 
       // Pre-fetch the next token in the background for subsequent sessions
-      fetch("/api/token")
+      fetch("/api/token", { headers: apiHeaders() })
         .then((r) => r.ok ? r.json() : null)
         .then((data: { token: string } | null) => {
           if (data?.token) prefetchedTokenRef.current = data.token;
@@ -366,7 +367,7 @@ function SpeakingPartnerContent() {
         overrides: { agent: { firstMessage: openingLine } },
       });
       // Pre-fetch next token in the background
-      fetch("/api/token")
+      fetch("/api/token", { headers: apiHeaders() })
         .then((r) => (r.ok ? r.json() : null))
         .then((data: { token: string } | null) => {
           if (data?.token) prefetchedTokenRef.current = data.token;
@@ -398,7 +399,7 @@ function SpeakingPartnerContent() {
     try {
       const res = await fetch("/api/translate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ text: lastAssistantText, sourceLang: selectedLanguage?.code ?? "de" }),
       });
       if (!res.ok) throw new Error(`Translate API error ${res.status}`);
@@ -444,7 +445,7 @@ function SpeakingPartnerContent() {
             ? prefetchedTokenRef.current : null;
           prefetchedTokenRef.current = null;
           if (!token) {
-            const res = await fetch("/api/token");
+            const res = await fetch("/api/token", { headers: apiHeaders() });
             if (!res.ok) throw new Error(`Token error ${res.status}`);
             ({ token } = (await res.json()) as { token: string });
           }
@@ -565,7 +566,7 @@ function SpeakingPartnerContent() {
                 try {
                   const res = await fetch("/api/tts", {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: apiHeaders({ "Content-Type": "application/json" }),
                     body: JSON.stringify({ text: word }),
                   });
                   if (!res.ok) return;

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { GermanLevel } from "@/lib/mockSpeakingPartner";
+import { checkApiSecret } from "@/lib/apiAuth";
 
 const SYSTEM_PROMPT = `You are a friendly German conversation partner helping someone practise spoken German.
 
@@ -26,6 +27,9 @@ type ChatRequest = {
 };
 
 export async function POST(req: NextRequest) {
+  const authError = checkApiSecret(req);
+  if (authError) return authError;
+
   const apiKey = process.env.GROQ_API_KEY;
 
   if (!apiKey) {
