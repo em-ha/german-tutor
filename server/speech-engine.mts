@@ -20,11 +20,11 @@ import OpenAI from "openai";
 import { config } from "dotenv";
 config({ path: ".env.local" });
 
-// On Railway: writes to the container's ephemeral filesystem (lost on redeploy — transcripts
-// are only persisted locally via the Mac path). On local dev: use the absolute Mac path if set.
-const TRANSCRIPT_DIR = process.env.TRANSCRIPT_DIR
-  ?? "/Users/emmahartwig/Documents/claude-emma-gdrive/quatschi-local-transcripts";
-mkdirSync(TRANSCRIPT_DIR, { recursive: true });
+// Transcript saving is local-only. Set TRANSCRIPT_DIR in .env.local to enable it.
+// On Railway (production), TRANSCRIPT_DIR is not set — saving is skipped entirely
+// because ElevenLabs already stores conversation transcripts on their platform.
+const TRANSCRIPT_DIR = process.env.TRANSCRIPT_DIR ?? null;
+if (TRANSCRIPT_DIR) mkdirSync(TRANSCRIPT_DIR, { recursive: true });
 
 const SPEECH_ENGINE_ID = process.env.SPEECH_ENGINE_ID;
 if (!SPEECH_ENGINE_ID) throw new Error("SPEECH_ENGINE_ID env var is required");
@@ -471,10 +471,12 @@ async function* stripAndParse(
 // ── Transcript saving ─────────────────────────────────────────────────────────
 
 function saveTranscript(conversationId: string, data: SessionData): void {
+  if (!TRANSCRIPT_DIR) return; // production — ElevenLabs handles transcripts
   try {
     const date = data.startedAt;
     const dateStr = date.toISOString().replace(/T/, "_").replace(/:/g, "-").slice(0, 19);
-    const filename = `${dateStr}_${conversationId.slice(-8)}.txt`;
+    const safeId = conversationId.replace(/[^a-zA-Z0-9_-]/g, "").slice(-8);
+    const filename = `${dateStr}_${safeId}.txt`;
     const filepath = join(TRANSCRIPT_DIR, filename);
 
     const header = [
