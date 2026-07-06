@@ -3,7 +3,8 @@
 import { Component, useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
-import { LANGUAGES, getPickerHeading, type Language } from "@/lib/languages";
+import { LANGUAGES, type Language } from "@/lib/languages";
+import { apiHeaders } from "@/lib/apiAuth";
 import { useMouthAnimation } from "@/lib/useMouthAnimation";
 import type { Emotion } from "./CharacterAvatar";
 import { CharacterAvatar } from "./CharacterAvatar";
@@ -38,25 +39,21 @@ class SdkErrorBoundary extends Component<{ children: ReactNode }, { crashed: boo
   }
 }
 
+const GERMAN = LANGUAGES.find((l) => l.code === "de")!;
+
 // ── Inner component (must be inside ConversationProvider) ────────────────────
 function SpeakingPartnerContent() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [lastAssistantText, setLastAssistantText] = useState("");
 
-  // Language selection
+  // null = picker shown; non-null = session started with that language
   const [selectedLanguage, setSelectedLanguage] = useState<Language | null>(null);
-  const [pickerHeading, setPickerHeading] = useState(
-    "Which language do you want to practice today?"
-  );
-  useEffect(() => {
-    setPickerHeading(getPickerHeading());
-  }, []);
 
-  // Mode selection
+// Mode selection
   const [mode, setMode] = useState<"conversation" | "shadowing">("conversation");
 
   // Ref used to restart the session in a new mode after endSession() resolves
-  const pendingModeRestartRef = useRef<{ lang: Language; newMode: "conversation" | "shadowing" } | null>(null);
+  const pendingModeRestartRef = useRef<{ newMode: "conversation" | "shadowing" } | null>(null);
 
   // Translate feature
   const [translation, setTranslation] = useState<string | null>(null);
@@ -113,8 +110,7 @@ function SpeakingPartnerContent() {
       setExcitement(0);
       smoothedExcitementRef.current = 0;
 
-      // If the session never fully connected (wasStarting=true), it was a failed
-      // connection attempt — go back to the language picker, not sleep.
+      // Session failed before fully connecting — go back to picker.
       if (wasStarting) {
         setSelectedLanguage(null);
         return;
@@ -127,13 +123,12 @@ function SpeakingPartnerContent() {
         return;
       }
 
-      // Unexpected ElevenLabs disconnect during an active session (network glitch, their VAD timeout, etc.)
-      // → auto-reconnect up to 2 times before giving up and going to the language picker.
+      // Unexpected ElevenLabs disconnect (network glitch, VAD timeout, etc.)
+      // → auto-reconnect up to 2 times before giving up and going back to picker.
       if (!userEndedSessionRef.current && selectedLanguageRef.current && !pendingModeRestartRef.current) {
-        const lang = selectedLanguageRef.current;
         if (reconnectAttemptsRef.current < 2) {
           reconnectAttemptsRef.current += 1;
-          setTimeout(() => { void reconnectRef.current(lang); }, 1000);
+          setTimeout(() => { void reconnectRef.current(); }, 1000);
         } else {
           reconnectAttemptsRef.current = 0;
           setSelectedLanguage(null);
@@ -261,6 +256,7 @@ function SpeakingPartnerContent() {
     setShowTranslation(false);
   }, []);
 
+
   // ── Pre-fetch token on mount so mic press is instant ───────────────────────
   // Returns true if the JWT still has at least 60 seconds before expiry.
   const isTokenFresh = (token: string): boolean => {
@@ -276,7 +272,7 @@ function SpeakingPartnerContent() {
   useEffect(() => {
     const prefetch = async () => {
       try {
-        const res = await fetch("/api/token");
+        const res = await fetch("/api/token", { headers: apiHeaders() });
         if (res.ok) {
           const { token } = (await res.json()) as { token: string };
           prefetchedTokenRef.current = token;
@@ -298,7 +294,7 @@ function SpeakingPartnerContent() {
     const delays = [0, 1500, 3000, 5000];
     for (const delay of delays) {
       if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-      const res = await fetch("/api/token");
+      const res = await fetch("/api/token", { headers: apiHeaders() });
       if (res.ok) {
         const { token } = (await res.json()) as { token: string };
         return token;
@@ -308,48 +304,11 @@ function SpeakingPartnerContent() {
     throw new Error("Could not get a session token — please try again.");
   }, []);
 
-  // ── Mic press ───────────────────────────────────────────────────────────────
-  const handleMicPress = useCallback(async () => {
-    setLocalError(null);
+  // ── Reconnect ref — allows onDisconnect (stale closure) to call the latest startSession ──
+  const reconnectRef = useRef<() => Promise<void>>(async () => {});
 
-    if (conversation.status === "connected" || conversation.status === "connecting") {
-      userEndedSessionRef.current = true;
-      void conversation.endSession();
-      return;
-    }
-
-    try {
-      const token = await fetchTokenWithRetry();
-
-      setLastAssistantText("");
-      resetTranslation();
-
-      const lang = selectedLanguage ?? LANGUAGES[1]; // default to German if somehow called without selection
-      const openingLine = mode === "shadowing" ? lang.shadowingOpeningLine : lang.openingLine;
-      isStartingSessionRef.current = true;
-      conversation.startSession({
-        conversationToken: token,
-        overrides: { agent: { firstMessage: openingLine } },
-      });
-
-      // Pre-fetch the next token in the background for subsequent sessions
-      fetch("/api/token")
-        .then((r) => r.ok ? r.json() : null)
-        .then((data: { token: string } | null) => {
-          if (data?.token) prefetchedTokenRef.current = data.token;
-        })
-        .catch(() => {});
-    } catch (err) {
-      console.error("[SpeakingPartner] Connection error:", err);
-      setLocalError("Could not connect — please try again.");
-    }
-  }, [conversation, resetTranslation, mode, fetchTokenWithRetry]);
-
-  // ── Reconnect ref — allows onDisconnect (stale closure) to call the latest handleLanguageSelect ──
-  const reconnectRef = useRef<(lang: Language) => Promise<void>>(async () => {});
-
-  // ── Language select (auto-starts session) ──────────────────────────────────
-  const handleLanguageSelect = useCallback(async (lang: Language) => {
+  // ── Start session ──────────────────────────────────────────────────────────
+  const startSession = useCallback(async (lang: Language) => {
     setLocalError(null);
 
     try {
@@ -365,23 +324,37 @@ function SpeakingPartnerContent() {
         conversationToken: token,
         overrides: { agent: { firstMessage: openingLine } },
       });
-      // Pre-fetch next token in the background
-      fetch("/api/token")
+      // Pre-fetch next token in the background for subsequent sessions
+      fetch("/api/token", { headers: apiHeaders() })
         .then((r) => (r.ok ? r.json() : null))
         .then((data: { token: string } | null) => {
           if (data?.token) prefetchedTokenRef.current = data.token;
         })
         .catch(() => {});
     } catch (err) {
-      console.error("[SpeakingPartner] Language select error:", err);
+      console.error("[SpeakingPartner] Connection error:", err);
       setSelectedLanguage(null);
       setLocalError("Could not connect — please try again.");
-    } finally {
     }
   }, [conversation, resetTranslation, mode, fetchTokenWithRetry]);
 
-  // Keep reconnectRef pointing to the latest handleLanguageSelect
-  useEffect(() => { reconnectRef.current = handleLanguageSelect; }, [handleLanguageSelect]);
+  // Keep reconnectRef pointing to the latest startSession (uses last selectedLanguage)
+  useEffect(() => {
+    reconnectRef.current = () => {
+      const lang = selectedLanguageRef.current ?? GERMAN;
+      return startSession(lang);
+    };
+  }, [startSession]);
+
+  // ── Mic press ───────────────────────────────────────────────────────────────
+  const handleMicPress = useCallback(async () => {
+    if (conversation.status === "connected" || conversation.status === "connecting") {
+      userEndedSessionRef.current = true;
+      void conversation.endSession();
+      return;
+    }
+    await startSession(selectedLanguage ?? GERMAN);
+  }, [conversation, startSession, selectedLanguage]);
 
   // ── Translate ───────────────────────────────────────────────────────────────
   const handleTranslate = useCallback(async () => {
@@ -398,8 +371,8 @@ function SpeakingPartnerContent() {
     try {
       const res = await fetch("/api/translate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: lastAssistantText, sourceLang: selectedLanguage?.code ?? "de" }),
+        headers: apiHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ text: lastAssistantText, sourceLang: "de" }),
       });
       if (!res.ok) throw new Error(`Translate API error ${res.status}`);
       const data = (await res.json()) as { translation?: string };
@@ -444,15 +417,15 @@ function SpeakingPartnerContent() {
             ? prefetchedTokenRef.current : null;
           prefetchedTokenRef.current = null;
           if (!token) {
-            const res = await fetch("/api/token");
+            const res = await fetch("/api/token", { headers: apiHeaders() });
             if (!res.ok) throw new Error(`Token error ${res.status}`);
             ({ token } = (await res.json()) as { token: string });
           }
           setLastAssistantText("");
           resetTranslation();
           const openingLine = pendingMode.newMode === "shadowing"
-            ? pendingMode.lang.shadowingOpeningLine
-            : pendingMode.lang.openingLine;
+            ? GERMAN.shadowingOpeningLine
+            : GERMAN.openingLine;
           isStartingSessionRef.current = true;
           conversation.startSession({
             conversationToken: token,
@@ -489,27 +462,24 @@ function SpeakingPartnerContent() {
             status={status}
             micSupported={true}
             onMicPress={() => {
-              // Wake up and go to language picker for a clean restart
               setIsAsleep(false);
               setSelectedLanguage(null);
             }}
             mode={mode}
             onModeToggle={() => {
-              // Wake up, switch mode, go to picker
               setIsAsleep(false);
               setSelectedLanguage(null);
               const newMode = mode === "conversation" ? "shadowing" : "conversation";
               setMode(newMode);
             }}
             onClose={() => {
-              // X also goes to language picker
               setIsAsleep(false);
               setSelectedLanguage(null);
             }}
           />
         </div>
       ) : !selectedLanguage ? (
-        // ── Language picker ────────────────────────────────────────────────────
+        // ── Language picker (German only) ──────────────────────────────────────
         <div className="relative z-10 flex h-dvh flex-col items-center justify-center gap-4 px-6">
           {localError && (
             <div role="alert" className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
@@ -519,20 +489,16 @@ function SpeakingPartnerContent() {
               </button>
             </div>
           )}
-          <p className="max-w-[329px] text-center text-[32px] leading-snug text-[#161d2f] font-[family-name:var(--font-special-gothic)] md:max-w-[516px]">{pickerHeading}</p>
-
+          <p className="max-w-[329px] text-center text-[32px] leading-snug text-[#161d2f] font-[family-name:var(--font-special-gothic)] md:max-w-[516px]">Which language do you want to practice today?</p>
           <div className="flex w-full max-w-[329px] flex-col gap-4 md:w-auto md:max-w-none md:flex-row">
-            {LANGUAGES.map((lang) => (
-              <button
-                key={lang.code}
-                type="button"
-                onClick={() => void handleLanguageSelect(lang)}
-                className="flex h-[60px] w-full items-center justify-center gap-2 rounded-[27px] bg-[#161d2f] px-5 text-white transition-colors hover:bg-[#1e2740] active:bg-[#0e1320] md:h-[44px] md:w-auto"
-              >
-                <span className="text-2xl">{lang.flag}</span>
-                <span className="text-[20px] md:text-[16px]" style={{ fontFamily: "Inter, sans-serif", fontWeight: 400 }}>{lang.name}</span>
-              </button>
-            ))}
+            <button
+              type="button"
+              onClick={() => void startSession(GERMAN)}
+              className="flex h-[60px] w-full items-center justify-center gap-2 rounded-[27px] bg-[#161d2f] px-5 text-white transition-colors hover:bg-[#1e2740] active:bg-[#0e1320] md:h-[44px] md:w-auto"
+            >
+              <span className="text-2xl">{GERMAN.flag}</span>
+              <span className="text-[20px] md:text-[16px]" style={{ fontFamily: "Inter, sans-serif", fontWeight: 400 }}>{GERMAN.name}</span>
+            </button>
           </div>
         </div>
       ) : (
@@ -565,7 +531,7 @@ function SpeakingPartnerContent() {
                 try {
                   const res = await fetch("/api/tts", {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: apiHeaders({ "Content-Type": "application/json" }),
                     body: JSON.stringify({ text: word }),
                   });
                   if (!res.ok) return;
@@ -604,9 +570,9 @@ function SpeakingPartnerContent() {
             onModeToggle={() => {
               const newMode = mode === "conversation" ? "shadowing" : "conversation";
               setMode(newMode);
-              if (conversation.status === "connected" && selectedLanguage) {
+              if (conversation.status === "connected") {
                 userEndedSessionRef.current = true;
-                pendingModeRestartRef.current = { lang: selectedLanguage, newMode };
+                pendingModeRestartRef.current = { newMode };
                 void conversation.endSession();
               }
             }}

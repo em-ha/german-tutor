@@ -1,7 +1,10 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
+import { checkApiSecret } from "@/lib/apiAuth";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const authError = checkApiSecret(req);
+  if (authError) return authError;
   const apiKey = process.env.ELEVENLABS_API_KEY;
   const agentId = process.env.SPEECH_ENGINE_ID;
 

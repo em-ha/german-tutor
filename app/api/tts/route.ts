@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { checkApiSecret } from "@/lib/apiAuth";
 
 export async function POST(req: NextRequest) {
+  const authError = checkApiSecret(req);
+  if (authError) return authError;
   const apiKey = process.env.ELEVENLABS_API_KEY;
   const voiceId = process.env.ELEVENLABS_VOICE_ID;
 
@@ -11,8 +14,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const body = await req.json() as { text?: string };
+  const body = await req.json() as { text?: string; lang?: string };
   const text = body.text?.trim();
+  const lang = body.lang; // optional — if omitted, ElevenLabs auto-detects language
 
   if (!text) {
     return NextResponse.json({ error: "No text provided" }, { status: 400 });
@@ -30,11 +34,11 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         text,
         model_id: "eleven_multilingual_v2",
-        language_code: "de", // forces German prosody + question uptalk
+        ...(lang ? { language_code: lang } : {}), // omit for auto-detect (e.g. English demo)
         voice_settings: {
-          stability: 0.50,        // was 0.25 — more consistent, natural delivery
+          stability: 0.65,        // matches Speech Engine config
           similarity_boost: 0.75,
-          style: 0.30,            // was 0.65 — less theatrical, more conversational
+          style: 0.10,            // lower = more natural, less theatrical
           use_speaker_boost: true,
         },
       }),
