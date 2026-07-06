@@ -511,6 +511,8 @@ export function CharacterAvatar({
                   {faceElements}
                 </g>
               </g>
+
+
             </g>
           </svg>
         )}
