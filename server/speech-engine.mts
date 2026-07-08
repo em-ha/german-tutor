@@ -33,9 +33,8 @@ if (!process.env.GROQ_API_KEY) throw new Error("GROQ_API_KEY env var is required
 
 const elevenlabs = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
 
-// ── LLM provider — swap PROVIDER to switch between Groq and Gemini ────────────
-// To revert to Groq: change PROVIDER back to "groq"
-const PROVIDER = "gemini"; // "groq" | "gemini"
+// ── LLM provider — set LLM_PROVIDER env var to "groq" or "gemini" (default: gemini) ──
+const PROVIDER = (process.env.LLM_PROVIDER ?? "gemini") as "groq" | "gemini";
 
 // Groq client — used when PROVIDER === "groq"
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY ?? "" });
