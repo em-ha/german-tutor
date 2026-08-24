@@ -119,6 +119,11 @@ export default function LabPage() {
       // documented in the guides.
       const ai = new GoogleGenAI({ apiKey: token, httpOptions: { apiVersion: "v1alpha" } });
 
+      // `onopen` can fire before this promise resolves (the SDK opens the
+      // socket before returning the Session object), so anything the
+      // callback needs must go through the ref, not the local `session`
+      // const below — referencing that directly here throws "Cannot access
+      // 'session' before initialization".
       const session = await ai.live.connect({
         model,
         config: { responseModalities: [Modality.AUDIO] }, // rest is locked into the token
@@ -126,11 +131,6 @@ export default function LabPage() {
           onopen: () => {
             setStatus("connected");
             audio.setMicMuted(false);
-            // Echo mode needs a kickoff — Quatschi speaks first and there is
-            // no scripted opening line here (that's a Stage 3 concern).
-            if (mode === "shadowing") {
-              session.sendClientContent({ turns: "Fang an.", turnComplete: true });
-            }
           },
           onmessage: handleMessage,
           onerror: (e) => {
@@ -145,6 +145,13 @@ export default function LabPage() {
         },
       });
       sessionRef.current = session;
+
+      // Echo mode needs a kickoff — Quatschi speaks first and there is no
+      // scripted opening line here (that's a Stage 3 concern). Safe to send
+      // now: `session` is guaranteed initialized at this point.
+      if (mode === "shadowing") {
+        session.sendClientContent({ turns: "Fang an.", turnComplete: true });
+      }
     } catch (err) {
       setError(err instanceof Error ? `${err.name}: ${err.message}` : String(err));
       setStatus("error");
